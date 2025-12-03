@@ -191,30 +191,20 @@ const fileToBase64 = (file) => new Promise((resolve, reject) => {
 // CSV PARSER (Robust)
 const parseCSV = (text) => {
     const lines = text.split(/\r\n|\n/).filter(l => l.trim());
-    // Skip header row if it exists and starts with 'board' (case insensitive check)
     const startIdx = lines[0].toLowerCase().startsWith('board') ? 1 : 0;
-    
     const result = {};
-    
     for(let i=startIdx; i<lines.length; i++) {
-        const row = lines[i].split(/,(?=(?:(?:[^"]*"){2})*[^"]*$)/); // Handle quoted commas if any
+        const row = lines[i].split(/,(?=(?:(?:[^"]*"){2})*[^"]*$)/);
         if (row.length < 4) continue;
-        
-        // Clean quotes and whitespace
         const clean = (s) => s ? s.replace(/^"|"$/g, '').trim().toUpperCase() : '';
-        
         const board = clean(row[0]);
         const subject = clean(row[1]);
         const paperRaw = clean(row[2]); 
-        const topicsRaw = row.slice(3).join(','); // Re-join remainder
-        
+        const topicsRaw = row.slice(3).join(',');
         const topics = topicsRaw.split(/[;,]/).map(t => t.replace(/^"|"$/g, '').trim()).filter(t => t);
-        
-        // Map Paper to Code
         let pCode = paperRaw;
         if (paperRaw.includes('1')) pCode = 'P1';
         if (paperRaw.includes('2')) pCode = 'P2';
-
         const key = `${board}-${subject}-${pCode}`;
         result[key] = topics;
     }
@@ -327,7 +317,6 @@ const TeacherStudio = ({ customQuestions, setCustomQuestions, paperResources, se
     setNewQ(p=>({...p, questionImg:[], schemeImg:null, lines: 4}));
   };
 
-  // Resource Handlers
   const handleResUpload = async (e) => { 
       const f=e.target.files[0]; 
       if(f){ 
@@ -337,7 +326,6 @@ const TeacherStudio = ({ customQuestions, setCustomQuestions, paperResources, se
                   const text = await f.text();
                   const schemaData = parseCSV(text);
                   setTopicSchema(prev => ({...prev, ...schemaData}));
-                  // Add dummy resource for UI list
                   const key = `SCHEMA-FILE-${f.name}`;
                   setPaperResources(prev => ({...prev, [key]: { fileName: f.name, type: 'schema', board: 'ALL' }}));
                   alert(`Schema Loaded: ${Object.keys(schemaData).length} paper configurations found.`);
@@ -389,7 +377,6 @@ const TeacherStudio = ({ customQuestions, setCustomQuestions, paperResources, se
 
   const classifyAllQuestions = async () => {
       setBulkProcessing(true);
-      // Re-classify everything currently filtered
       const targets = filteredQuestions;
       let processedCount = 0;
       for (const item of targets) {
@@ -403,7 +390,7 @@ const TeacherStudio = ({ customQuestions, setCustomQuestions, paperResources, se
               });
               processedCount++;
           } catch(e) {}
-          await new Promise(r => setTimeout(r, 500)); // Rate limit
+          await new Promise(r => setTimeout(r, 500));
       }
       setBulkProcessing(false);
       if(processedCount > 0) alert(`Refined ${processedCount} topics using your new schema!`);
@@ -416,7 +403,6 @@ const TeacherStudio = ({ customQuestions, setCustomQuestions, paperResources, se
       return true;
   });
 
-  // Count untagged
   const untaggedCount = customQuestions.filter(q => !q.topic || q.topic === 'General' || q.topic === 'Uncategorized').length;
 
   return (
@@ -515,6 +501,131 @@ const TeacherStudio = ({ customQuestions, setCustomQuestions, paperResources, se
             </div>
         </div>
       </div>
+    </div>
+  );
+};
+
+const ExamMode = ({ examData, paperResources, onExit, onComplete }) => {
+  const [idx, setIdx] = useState(0);
+  const [answers, setAnswers] = useState({});
+  const [txt, setTxt] = useState("");
+  const [showExp, setShowExp] = useState(false);
+  const [marking, setMarking] = useState(false);
+  const [isDone, setIsDone] = useState(false);
+  const [chat, setChat] = useState(false);
+
+  const q = examData.questions[idx];
+  
+  const resKey = `${q.board || 'AQA'}-${examData.board === 'AQA' ? 'PHYSICS' : 'CHEMISTRY'}-${q.year || examData.year}-${q.paper || examData.paperCode}-scheme`;
+  const globalRes = paperResources?.[resKey];
+
+  useEffect(() => { setTxt(""); setShowExp(false); setMarking(false); }, [idx]);
+
+  const submitText = async () => {
+    if (!txt.trim()) return;
+    if (q.type === 'image') {
+      setMarking(true);
+      try {
+        const fb = await evaluateAnswerWithGemini(q.questionImg, q.schemeImg, globalRes?.file, txt, q.marks);
+        setAnswers(p => ({ ...p, [idx]: { val: txt, feedback: fb, marksAwarded: 0, isCorrect: null } }));
+        setShowExp(true);
+      } catch (e) { alert("AI Error"); }
+      setMarking(false);
+    } else {
+      setAnswers(p => ({ ...p, [idx]: { val: txt, marksAwarded: 0, isCorrect: null } }));
+      setShowExp(true);
+    }
+  };
+
+  const verify = (correct) => {
+    const awarded = correct ? q.marks : 0;
+    setAnswers(p => ({ ...p, [idx]: { ...p[idx], isCorrect: correct, marksAwarded: awarded } }));
+  };
+
+  const next = () => {
+    if (idx < examData.questions.length - 1) setIdx(p => p + 1);
+    else {
+        setIsDone(true);
+        if (onComplete) onComplete(answers, examData);
+    }
+  };
+
+  if (isDone) {
+    const score = Object.values(answers).reduce((a, x) => a + (x.marksAwarded || 0), 0);
+    const total = examData.questions.reduce((a, x) => a + x.marks, 0);
+    return (
+        <div className="min-h-screen bg-slate-50 p-8 flex items-center justify-center">
+            <div className="bg-white p-8 rounded-3xl shadow-xl max-w-lg w-full text-center">
+                <Award className="w-16 h-16 text-indigo-600 mx-auto mb-4"/>
+                <h2 className="text-3xl font-bold mb-2">Practice Complete!</h2>
+                <div className="text-5xl font-extrabold text-indigo-600 mb-2">{Math.round((score/total)*100)}%</div>
+                <p className="text-slate-500 mb-6">You scored {score}/{total} marks</p>
+                <button onClick={onExit} className="w-full bg-slate-900 text-white py-3 rounded-xl font-bold">Back to Atlas</button>
+            </div>
+        </div>
+    );
+  }
+
+  // Styles for the ruled textarea
+  const lineH = 32; // Line height in pixels
+  const ruledLines = q.lines || 4; // Default to 4 lines if not set
+  const areaHeight = ruledLines * lineH;
+  
+  const ruledStyle = {
+    lineHeight: `${lineH}px`,
+    backgroundImage: `repeating-linear-gradient(transparent, transparent ${lineH-1}px, #e2e8f0 ${lineH-1}px, #e2e8f0 ${lineH}px)`,
+    backgroundAttachment: 'local',
+    height: `${areaHeight}px`,
+    minHeight: `${areaHeight}px`,
+    paddingTop: '6px' // Align text with lines
+  };
+
+  return (
+    <div className="min-h-screen bg-slate-50 flex flex-col font-sans">
+        <header className="bg-white p-4 border-b flex justify-between items-center sticky top-0 z-10">
+            <button onClick={onExit} className="text-slate-500 font-bold flex gap-2 items-center"><ArrowLeft className="w-4 h-4"/> Exit</button>
+            <div className="text-sm font-bold">{examData.title} <span className="text-slate-400">Q{idx+1}/{examData.questions.length}</span></div>
+            <button onClick={()=>setChat(!chat)} className="p-2 bg-indigo-50 text-indigo-600 rounded-full"><MessageCircle className="w-4 h-4"/></button>
+        </header>
+        <main className="flex-1 max-w-3xl mx-auto w-full p-4 pb-32">
+            <div className="bg-white p-6 rounded-2xl shadow-sm border mb-4">
+                <div className="flex justify-between mb-4"><span className="bg-slate-100 text-slate-500 text-[10px] font-bold px-2 py-1 rounded">{q.topic || 'General'}</span><span className="bg-indigo-50 text-indigo-600 text-[10px] font-bold px-2 py-1 rounded">{q.marks} Marks</span></div>
+                {q.type === 'image' ? (
+                    <div className="space-y-2">
+                        {Array.isArray(q.questionImg) ? q.questionImg.map((img,i)=><img key={i} src={getImageData(img)} className="w-full rounded border"/>) : <img src={getImageData(q.questionImg)} className="w-full rounded border"/>}
+                    </div>
+                ) : <h2 className="text-lg font-medium">{q.text}</h2>}
+            </div>
+            {!showExp ? (
+                <div className="bg-white p-4 rounded-2xl border shadow-sm">
+                    <div className="relative w-full border border-gray-200 rounded-xl overflow-hidden bg-white mb-2">
+                        {/* Ruled Textarea */}
+                        <textarea 
+                            value={txt} 
+                            onChange={e=>setTxt(e.target.value)} 
+                            disabled={marking} 
+                            placeholder="Write your answer here..." 
+                            className="w-full p-3 resize-none outline-none text-base text-slate-700 block"
+                            style={ruledStyle}
+                        />
+                    </div>
+                    <button onClick={submitText} disabled={marking||!txt} className="w-full bg-indigo-600 text-white py-3 rounded-xl font-bold flex justify-center items-center gap-2">{marking?<Loader2 className="animate-spin w-4 h-4"/>:<PenTool className="w-4 h-4"/>} Submit Answer</button>
+                </div>
+            ) : (
+                <div className="bg-slate-800 text-white p-6 rounded-2xl shadow-lg animate-in slide-in-from-bottom-4">
+                    {answers[idx]?.feedback && <div className="bg-indigo-900/50 p-4 rounded-xl mb-4 text-sm text-indigo-100 font-serif border border-indigo-700">{answers[idx].feedback}</div>}
+                    <div className="flex justify-between items-center mb-4"><span className="text-xs font-bold uppercase text-slate-400">Self Verify</span></div>
+                    <div className="flex gap-2 mb-6">
+                        <button onClick={()=>verify(false)} className={`flex-1 py-2 rounded font-bold text-sm flex gap-2 justify-center items-center ${answers[idx]?.isCorrect===false?'bg-red-500':'bg-slate-700'}`}><XCircle className="w-4 h-4"/> 0 Marks</button>
+                        <button onClick={()=>verify(true)} className={`flex-1 py-2 rounded font-bold text-sm flex gap-2 justify-center items-center ${answers[idx]?.isCorrect===true?'bg-green-500':'bg-slate-700'}`}><CheckCircle className="w-4 h-4"/> Full Marks</button>
+                    </div>
+                    {q.type!=='image' && <div className="text-sm opacity-80 font-mono mb-4">{q.explanation}</div>}
+                    {q.type==='image' && <img src={getImageData(q.schemeImg)} className="w-full rounded mb-4 bg-white"/>}
+                    <button onClick={next} className="w-full bg-white text-slate-900 py-3 rounded-xl font-bold flex justify-center items-center gap-2">Next <ChevronRight className="w-4 h-4"/></button>
+                </div>
+            )}
+        </main>
+        <AskMedly isOpen={chat} onClose={()=>setChat(false)} context={q}/>
     </div>
   );
 };
