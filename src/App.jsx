@@ -69,7 +69,7 @@ const getImageData = (img) => {
 
 // GEMINI API: Chat with Atlas
 const chatWithAtlas = async (questionImg, schemeImg, userQuery) => {
-  const apiKey = ""; 
+  const apiKey = import.meta.env.VITE_GEMINI_API_KEY || ""; 
   const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${apiKey}`;
 
   const prompt = `
@@ -108,7 +108,7 @@ const chatWithAtlas = async (questionImg, schemeImg, userQuery) => {
 
 // GEMINI API: Detect Topic
 const detectTopicFromImage = async (questionImg, board, subject, paper, topicSchema) => {
-  const apiKey = ""; 
+  const apiKey= import.meta.env.VITE_GEMINI_API_KEY || "";
   const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${apiKey}`;
 
   const schemaKey = `${board.toUpperCase()}-${subject.toUpperCase()}-${paper.toUpperCase()}`;
@@ -150,7 +150,7 @@ const detectTopicFromImage = async (questionImg, board, subject, paper, topicSch
 };
 
 const detectMarksFromImage = async (questionImg) => {
-  const apiKey = "";
+  const apiKey= import.meta.env.VITE_GEMINI_API_KEY || "";
   const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${apiKey}`;
   const prompt = `Find the max marks (e.g. [3 marks]). Return ONLY the integer.`;
   const parts = [{ text: prompt }];
@@ -169,7 +169,7 @@ const detectMarksFromImage = async (questionImg) => {
 };
 
 const detectLinesFromImage = async (questionImg) => {
-  const apiKey = "";
+  const apiKey = import.meta.env.VITE_GEMINI_API_KEY || "";
   const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${apiKey}`;
   const prompt = `Count the number of horizontal ruled lines for the answer. Return ONLY the integer. If none, return 0.`;
   const parts = [{ text: prompt }];
@@ -189,7 +189,7 @@ const detectLinesFromImage = async (questionImg) => {
 };
 
 const evaluateAnswerWithGemini = async (questionImg, schemeImg, globalSchemePdf, userAnswer, marks) => {
-  const apiKey = "";
+  const apiKey = import.meta.env.VITE_GEMINI_API_KEY || "";
   const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${apiKey}`;
 
   let prompt = `
