@@ -1,5 +1,4 @@
 import React, { useState, useEffect, useRef } from 'react';
-
 import { 
   BookOpen, 
   MessageCircle, 
@@ -40,7 +39,14 @@ import {
   AlignJustify,
   Map,
   Table,
-  FileSpreadsheet
+  FileSpreadsheet,
+  AlertCircle,
+  Lightbulb,
+  Check,
+  Bookmark,
+  Star,
+  Eye,
+  StickyNote
 } from 'lucide-react';
 
 /**
@@ -61,12 +67,50 @@ const getImageData = (img) => {
     return (typeof img === 'object' && img !== null) ? img.data : img;
 };
 
-// GEMINI API: Detect Topic (Context Aware with Schema)
-const detectTopicFromImage = async (questionImg, board, subject, paper, topicSchema) => {
-  const apiKey = import.meta.env.VITE_GEMINI_API_KEY || "";
+// GEMINI API: Chat with Atlas
+const chatWithAtlas = async (questionImg, schemeImg, userQuery) => {
+  const apiKey = ""; 
   const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${apiKey}`;
 
-  // NORMALIZE KEY: Uppercase everything to match CSV parser
+  const prompt = `
+    You are Atlas, an expert AI Exam Tutor.
+    The student is asking a question about the exam problem in the image(s) provided.
+    
+    Student Query: "${userQuery}"
+    
+    Instructions:
+    - Format your answer nicely using **bolding** for keywords and bullet points (-) for lists.
+    - Use LaTeX formatting for all math formulas, enclosing them in double dollar signs like this: $$E=mc^2$$.
+    - Keep paragraphs short and readable.
+    - Answer helpfully, encouragingly, and concisely.
+    - If the student asks for the answer directly, provide a strong hint or the first step.
+    - Use the provided Mark Scheme (if available) to ensure your explanation aligns with the official requirements.
+  `;
+
+  const parts = [{ text: prompt }];
+  const qImages = Array.isArray(questionImg) ? questionImg : [questionImg];
+  qImages.forEach(img => { 
+      const b64 = getImageData(img);
+      if(b64) parts.push({ inlineData: { mimeType: "image/png", data: stripBase64Header(b64) } }); 
+  });
+  if (schemeImg) {
+      const sData = getImageData(schemeImg);
+      if(sData) parts.push({ inlineData: { mimeType: "image/png", data: stripBase64Header(sData) } });
+  }
+
+  try {
+    const response = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ contents: [{ parts }] }) });
+    if (!response.ok) throw new Error(`API Error`);
+    const data = await response.json();
+    return data.candidates?.[0]?.content?.parts?.[0]?.text?.trim() || "I'm having trouble seeing the question right now.";
+  } catch (error) { return "I'm having trouble connecting to my brain. Please try again."; }
+};
+
+// GEMINI API: Detect Topic
+const detectTopicFromImage = async (questionImg, board, subject, paper, topicSchema) => {
+  const apiKey = ""; 
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${apiKey}`;
+
   const schemaKey = `${board.toUpperCase()}-${subject.toUpperCase()}-${paper.toUpperCase()}`;
   const validTopics = topicSchema?.[schemaKey] || [];
 
@@ -75,23 +119,17 @@ const detectTopicFromImage = async (questionImg, board, subject, paper, topicSch
       promptContext = `
       CRITICAL INSTRUCTION: You are strictly bound to a specific curriculum list.
       You MUST classify the image into exactly ONE of the topics from the list below.
-      If the question covers multiple, choose the most dominant one.
       
       VALID TOPICS LIST:
       ${validTopics.map(t => `- "${t}"`).join('\n')}
-      
-      Do not output any topic that is not in this list.
       `;
   } else {
-      promptContext = `
-      Classify it into ONE single academic topic string strictly based on the official ${board} ${subject} syllabus.
-      `;
+      promptContext = `Classify it into ONE single academic topic string strictly based on the official ${board} ${subject} syllabus.`;
   }
 
   const prompt = `
     Analyze this exam question image. 
     ${promptContext}
-    
     Return ONLY the topic name. No explanations.
   `;
 
@@ -112,7 +150,7 @@ const detectTopicFromImage = async (questionImg, board, subject, paper, topicSch
 };
 
 const detectMarksFromImage = async (questionImg) => {
-  const apiKey = import.meta.env.VITE_GEMINI_API_KEY || "";
+  const apiKey = "";
   const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${apiKey}`;
   const prompt = `Find the max marks (e.g. [3 marks]). Return ONLY the integer.`;
   const parts = [{ text: prompt }];
@@ -131,7 +169,7 @@ const detectMarksFromImage = async (questionImg) => {
 };
 
 const detectLinesFromImage = async (questionImg) => {
-  const apiKey = import.meta.env.VITE_GEMINI_API_KEY || "";
+  const apiKey = "";
   const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${apiKey}`;
   const prompt = `Count the number of horizontal ruled lines for the answer. Return ONLY the integer. If none, return 0.`;
   const parts = [{ text: prompt }];
@@ -151,13 +189,30 @@ const detectLinesFromImage = async (questionImg) => {
 };
 
 const evaluateAnswerWithGemini = async (questionImg, schemeImg, globalSchemePdf, userAnswer, marks) => {
-  const apiKey = import.meta.env.VITE_GEMINI_API_KEY || "";
+  const apiKey = "";
   const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${apiKey}`;
 
-  let prompt = `You are an examiner. Mark the student answer.\nMax Marks: ${marks}\nStudent Answer: "${userAnswer}"`;
-  if (globalSchemePdf) prompt += `\nUse Global Guidance PDF.`;
-  if (schemeImg) prompt += `\nUse Mark Scheme Image.`;
-  prompt += `\nProvide score (e.g. 2/${marks}) and brief feedback.`;
+  let prompt = `
+    You are a strict academic examiner.
+    Task: Mark the student's answer based on the provided Mark Scheme.
+    Data:
+    - Max Marks: ${marks}
+    - Student Answer: "${userAnswer}"
+  `;
+  if (globalSchemePdf) prompt += `\n- Use the Global Guidance PDF for general marking rules (sig figs, etc).`;
+  if (schemeImg) prompt += `\n- Use the specific Mark Scheme Image provided.`;
+
+  prompt += `
+    Output strictly in this JSON format:
+    {
+      "marks_awarded": number,
+      "feedback_title": "string",
+      "feedback_summary": "string",
+      "correct_points": ["string"],
+      "missed_points": ["string"],
+      "improvement_tip": "string"
+    }
+  `;
 
   const parts = [{ text: prompt }];
   const qImages = Array.isArray(questionImg) ? questionImg : [questionImg];
@@ -174,11 +229,18 @@ const evaluateAnswerWithGemini = async (questionImg, schemeImg, globalSchemePdf,
   const delays = [1000, 2000, 4000, 8000, 16000];
   for (let i = 0; i < 5; i++) {
     try {
-      const response = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ contents: [{ parts }] }) });
+      const response = await fetch(url, { 
+          method: 'POST', 
+          headers: { 'Content-Type': 'application/json' }, 
+          body: JSON.stringify({ contents: [{ parts }], generationConfig: { responseMimeType: "application/json" } }) 
+      });
       if (!response.ok) throw new Error(`API Error`);
       const data = await response.json();
-      return data.candidates?.[0]?.content?.parts?.[0]?.text || "Error marking.";
-    } catch (error) { if (i === 4) return "Marking failed."; await new Promise(r => setTimeout(r, delays[i])); }
+      return JSON.parse(data.candidates?.[0]?.content?.parts?.[0]?.text);
+    } catch (error) { 
+        if (i === 4) return { marks_awarded: 0, feedback_title: "Error", feedback_summary: "Could not generate marking.", correct_points: [], missed_points: [], improvement_tip: "Please try again." }; 
+        await new Promise(r => setTimeout(r, delays[i])); 
+    }
   }
 };
 
@@ -189,7 +251,6 @@ const fileToBase64 = (file) => new Promise((resolve, reject) => {
   reader.onerror = reject;
 });
 
-// CSV PARSER (Robust)
 const parseCSV = (text) => {
     const lines = text.split(/\r\n|\n/).filter(l => l.trim());
     const startIdx = lines[0].toLowerCase().startsWith('board') ? 1 : 0;
@@ -213,26 +274,11 @@ const parseCSV = (text) => {
 };
 
 /**
- * --- DATA ---
+ * --- DATA & COMPONENTS ---
  */
-const MARK_SCHEME_STYLES = {
-  formal: (method, answer, extra) => `**Mark Scheme:**\n• M1: ${method}\n• A1: ${answer}\n\n**Examiner Note:** ${extra}`
-};
-
 const STATIC_TOPICS_DB = {
   PHYSICS: {
-    P1: [
-      {
-        id: "p1-static-1",
-        type: "text",
-        topic: "Energy",
-        marks: 3,
-        lines: 4,
-        text: (year) => `[${year} Q1] A student heats water...`,
-        keywords: ["joules"],
-        explanation: "Use E=mcT"
-      }
-    ],
+    P1: [{ id: "p1-static-1", type: "text", topic: "Energy", marks: 3, lines: 4, text: (year) => `[${year} Q1] A student heats water...`, keywords: ["joules"], explanation: "Use E=mcT" }],
     P2: []
   },
   CHEMISTRY: { P1: [], P2: [] }
@@ -243,32 +289,111 @@ const SUBJECTS_DB = {
   "EDEXCEL-CHEM": { name: "Edexcel Chemistry", years: [2018, 2019, 2020, 2021, 2022, 2023, 2024, 2025], icon: Beaker, color: "teal" }
 };
 
-/**
- * --- COMPONENTS ---
- */
-
-const AskMedly = ({ context, isOpen, onClose }) => {
-  const [messages, setMessages] = useState([{ role: 'system', text: "Hi! I'm Medly." }]);
+const AskAtlas = ({ context, isOpen, onClose }) => {
+  const [messages, setMessages] = useState([{ role: 'system', text: "Hi! I'm Atlas." }]);
   const [input, setInput] = useState("");
+  const [isThinking, setIsThinking] = useState(false);
+  const [katexLoaded, setKatexLoaded] = useState(false);
   const scrollRef = useRef(null);
-  useEffect(() => { if (scrollRef.current) scrollRef.current.scrollTop = scrollRef.current.scrollHeight; }, [messages]);
-  const handleSend = () => {
-    if (!input.trim()) return;
-    setMessages(prev => [...prev, { role: 'user', text: input }]);
-    setInput("");
-    setTimeout(() => { setMessages(prev => [...prev, { role: 'system', text: "I'm analyzing..." }]); }, 1000);
+  
+  // Load KaTeX for math rendering
+  useEffect(() => {
+    if (!document.getElementById('katex-css')) {
+        const link = document.createElement('link');
+        link.id = 'katex-css';
+        link.href = "https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css";
+        link.rel = "stylesheet";
+        document.head.appendChild(link);
+    }
+    if (!window.katex) {
+        const script = document.createElement('script');
+        script.src = "https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js";
+        script.onload = () => setKatexLoaded(true);
+        document.head.appendChild(script);
+    } else {
+        setKatexLoaded(true);
+    }
+  }, []);
+
+  useEffect(() => { if (scrollRef.current) scrollRef.current.scrollTop = scrollRef.current.scrollHeight; }, [messages, isThinking]);
+  
+  // Enhanced Text Formatting with KaTeX support
+  const formatText = (text) => {
+      // Split by newlines first
+      return text.split('\n').map((line, i) => {
+          // Identify Math blocks ($$ or $) and Bold (** **)
+          const parts = line.split(/(\$\$[\s\S]+?\$\$|\$[\s\S]+?\$|\*\*[\s\S]+?\*\*)/g);
+          
+          return (
+              <p key={i} className="mb-2 last:mb-0 leading-relaxed break-words">
+                  {parts.map((part, j) => {
+                      if (part.startsWith('$$') && part.endsWith('$$')) {
+                          // Block Math
+                          const tex = part.slice(2, -2);
+                          if (window.katex) {
+                              try {
+                                  const html = window.katex.renderToString(tex, { displayMode: false });
+                                  return <span key={j} dangerouslySetInnerHTML={{ __html: html }} className="mx-1" />;
+                              } catch (e) { return <code key={j} className="text-xs bg-gray-100 p-1 rounded">{tex}</code>; }
+                          } else {
+                              return <code key={j} className="text-xs bg-gray-100 p-1 rounded">{tex}</code>;
+                          }
+                      } else if (part.startsWith('$') && part.endsWith('$')) {
+                          // Inline Math
+                          const tex = part.slice(1, -1);
+                          if (window.katex) {
+                              try {
+                                  const html = window.katex.renderToString(tex, { displayMode: false });
+                                  return <span key={j} dangerouslySetInnerHTML={{ __html: html }} className="mx-1" />;
+                              } catch (e) { return <code key={j} className="text-xs bg-gray-100 p-1 rounded">{tex}</code>; }
+                          } else {
+                              return <code key={j} className="text-xs bg-gray-100 p-1 rounded">{tex}</code>;
+                          }
+                      } else if (part.startsWith('**') && part.endsWith('**')) {
+                          // Bold
+                          return <strong key={j} className="text-indigo-700">{part.slice(2, -2)}</strong>;
+                      } else {
+                          return part;
+                      }
+                  })}
+              </p>
+          );
+      });
   };
+
+  const handleSend = async () => {
+    if (!input.trim()) return;
+    const userMsg = input;
+    setMessages(prev => [...prev, { role: 'user', text: userMsg }]);
+    setInput("");
+    setIsThinking(true);
+    const response = await chatWithAtlas(context?.questionImg, context?.schemeImg, userMsg);
+    setMessages(prev => [...prev, { role: 'system', text: response }]);
+    setIsThinking(false);
+  };
+
   if (!isOpen) return null;
   return (
-    <div className="fixed bottom-4 right-4 w-80 bg-white rounded-2xl shadow-2xl border border-indigo-100 flex flex-col z-50 h-96 overflow-hidden">
-      <div className="bg-indigo-600 p-3 text-white flex justify-between"><div className="flex gap-2"><Sparkles className="w-4 h-4"/> <span className="font-bold text-sm">ExamAtlas Tutor</span></div><button onClick={onClose}><X className="w-4 h-4"/></button></div>
-      <div ref={scrollRef} className="flex-1 overflow-y-auto p-3 space-y-2">{messages.map((m,i)=><div key={i} className={`p-2 rounded-lg text-xs ${m.role==='user'?'bg-indigo-600 text-white ml-auto':'bg-gray-100 text-gray-700'}`}>{m.text}</div>)}</div>
-      <div className="p-2 border-t flex gap-2"><input value={input} onChange={e=>setInput(e.target.value)} onKeyPress={e=>e.key==='Enter'&&handleSend()} placeholder="Ask..." className="flex-1 bg-gray-100 rounded-full px-3 text-xs"/><button onClick={handleSend}><ChevronRight className="w-4 h-4 text-indigo-600"/></button></div>
+    <div className="fixed bottom-4 right-4 w-80 md:w-96 bg-white rounded-2xl shadow-2xl border border-indigo-100 flex flex-col z-50 h-[500px] overflow-hidden animate-in slide-in-from-bottom-5">
+      <div className="bg-indigo-600 p-4 text-white flex justify-between items-center shadow-md">
+          <div className="flex gap-2 items-center"><div className="bg-white/20 p-1.5 rounded-lg"><Sparkles className="w-4 h-4"/></div><div><span className="font-bold text-sm block">Atlas Tutor</span><span className="text-[10px] opacity-80 block">AI Study Assistant</span></div></div>
+          <button onClick={onClose} className="hover:bg-white/20 p-1 rounded-full"><X className="w-5 h-5"/></button>
+      </div>
+      <div ref={scrollRef} className="flex-1 overflow-y-auto p-4 space-y-4 bg-slate-50">
+          {messages.map((m,i)=>(<div key={i} className={`flex ${m.role==='user'?'justify-end':'justify-start'}`}><div className={`max-w-[85%] p-3 rounded-2xl text-sm shadow-sm ${m.role==='user'?'bg-indigo-600 text-white rounded-br-none':'bg-white text-slate-700 border border-slate-100 rounded-bl-none'}`}>{m.role === 'system' ? formatText(m.text) : m.text}</div></div>))}
+          {isThinking && <div className="flex justify-start"><div className="bg-white p-3 rounded-2xl rounded-bl-none border border-slate-100 shadow-sm flex gap-1 items-center"><div className="w-1.5 h-1.5 bg-indigo-400 rounded-full animate-bounce"></div><div className="w-1.5 h-1.5 bg-indigo-400 rounded-full animate-bounce delay-75"></div><div className="w-1.5 h-1.5 bg-indigo-400 rounded-full animate-bounce delay-150"></div></div></div>}
+      </div>
+      <div className="p-3 bg-white border-t border-slate-100 flex gap-2">
+          <input value={input} onChange={e=>setInput(e.target.value)} onKeyPress={e=>e.key==='Enter'&&handleSend()} placeholder="Ask a question..." className="flex-1 bg-slate-100 rounded-full px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500/50 transition-all"/>
+          <button onClick={handleSend} disabled={!input.trim() || isThinking} className="bg-indigo-600 text-white p-2.5 rounded-full hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors shadow-sm"><ChevronRight className="w-5 h-5"/></button>
+      </div>
     </div>
   );
 };
 
 const TeacherStudio = ({ customQuestions, setCustomQuestions, paperResources, setPaperResources, topicSchema, setTopicSchema, onClose }) => {
+    // ... (This component remains largely the same, included for completeness)
+    // Minimizing for brevity, logic identical to previous but ensured imports exist
   const [activeTab, setActiveTab] = useState('questions');
   const [newQ, setNewQ] = useState({ board: "AQA", subject: "PHYSICS", year: "2018", paper: "P1", topic: "General", questionImg: [], schemeImg: null, marks: 4, lines: 4 });
   const [newRes, setNewRes] = useState({ board: "AQA", subject: "PHYSICS", year: "2018", paper: "P1", type: "scheme", file: null, fileName: "" });
@@ -379,7 +504,6 @@ const TeacherStudio = ({ customQuestions, setCustomQuestions, paperResources, se
   const classifyAllQuestions = async () => {
       setBulkProcessing(true);
       const targets = filteredQuestions;
-      let processedCount = 0;
       for (const item of targets) {
           try {
               const newTopic = await detectTopicFromImage(item.questionImg, item.board, item.subject, item.paper, topicSchema);
@@ -389,12 +513,11 @@ const TeacherStudio = ({ customQuestions, setCustomQuestions, paperResources, se
                   if (currentIdx !== -1) copy[currentIdx] = { ...copy[currentIdx], topic: newTopic };
                   return copy;
               });
-              processedCount++;
           } catch(e) {}
           await new Promise(r => setTimeout(r, 500));
       }
       setBulkProcessing(false);
-      if(processedCount > 0) alert(`Refined ${processedCount} topics using your new schema!`);
+      alert(`Refined topics!`);
   };
 
   const filteredQuestions = customQuestions.filter(q => {
@@ -492,7 +615,7 @@ const TeacherStudio = ({ customQuestions, setCustomQuestions, paperResources, se
                         <div key={i} className="flex gap-3 p-2 border rounded hover:bg-slate-50">
                             <div className="w-12 h-12 bg-gray-200 rounded overflow-hidden"><img src={getImageData(q.questionImg[0])} className="w-full h-full object-cover"/></div>
                             <div className="flex-1">
-                                <div className="flex gap-1 mb-1 items-center"><span className="text-[10px] bg-slate-200 text-slate-700 px-1 rounded">{q.board}</span><span className="text-[10px] bg-indigo-100 text-indigo-800 px-1 rounded">{q.subject}</span><div className="flex items-center gap-1 bg-green-100 text-green-800 px-1 rounded"><span className="text-[10px]">{q.topic}</span><button onClick={() => reclassifyQuestion(q.id)} className="hover:bg-green-200 rounded p-0.5" title="Re-classify Topic">{reclassifying === q.id ? <Loader2 className="w-2 h-2 animate-spin"/> : <Brain className="w-2 h-2"/>}</button></div></div>
+                                <div className="flex gap-1 mb-1 items-center"><span className="text-[10px] bg-slate-200 text-slate-700 px-1 rounded">{q.board}</span><span className="text-[10px] bg-indigo-100 text-indigo-800 px-1 rounded">{q.subject}</span><div className="flex items-center gap-1 bg-green-100 text-green-800 px-1 rounded"><span className="text-[10px]">{typeof q.topic === 'string' ? q.topic : 'Topic'}</span><button onClick={() => reclassifyQuestion(q.id)} className="hover:bg-green-200 rounded p-0.5" title="Re-classify Topic">{reclassifying === q.id ? <Loader2 className="w-2 h-2 animate-spin"/> : <Brain className="w-2 h-2"/>}</button></div></div>
                                 <div className="text-xs text-slate-500">{q.year} {q.paper} • {q.marks} Marks • {q.lines || 4} Lines</div>
                             </div>
                             <button onClick={()=>setCustomQuestions(p=>p.filter(item=>item.id!==q.id))} className="text-red-400 hover:text-red-600"><Trash2 className="w-4 h-4"/></button>
@@ -506,7 +629,7 @@ const TeacherStudio = ({ customQuestions, setCustomQuestions, paperResources, se
   );
 };
 
-const ExamMode = ({ examData, paperResources, onExit, onComplete }) => {
+const ExamMode = ({ examData, paperResources, onExit, onComplete, bookmarks, onToggleBookmark, onUpdateNote, bookmarkNotes }) => {
   const [idx, setIdx] = useState(0);
   const [answers, setAnswers] = useState({});
   const [txt, setTxt] = useState("");
@@ -514,13 +637,51 @@ const ExamMode = ({ examData, paperResources, onExit, onComplete }) => {
   const [marking, setMarking] = useState(false);
   const [isDone, setIsDone] = useState(false);
   const [chat, setChat] = useState(false);
+  
+  // Note Input State
+  const [showNoteInput, setShowNoteInput] = useState(false);
+  const [noteText, setNoteText] = useState("");
 
   const q = examData.questions[idx];
   
   const resKey = `${q.board || 'AQA'}-${examData.board === 'AQA' ? 'PHYSICS' : 'CHEMISTRY'}-${q.year || examData.year}-${q.paper || examData.paperCode}-scheme`;
   const globalRes = paperResources?.[resKey];
+  
+  const isBookmarked = bookmarks.includes(q.id);
 
-  useEffect(() => { setTxt(""); setShowExp(false); setMarking(false); }, [idx]);
+  // FIX: Split effect to prevent clearing text when bookmarking
+  useEffect(() => { 
+      setTxt(""); 
+      setShowExp(false); 
+      setMarking(false); 
+  }, [idx]); // Only reset answer when question index changes
+
+  useEffect(() => {
+      setShowNoteInput(false);
+      setNoteText(bookmarkNotes[q.id] || "");
+  }, [idx, q.id]); // Update note when question changes
+
+  const handleBookmarkClick = () => {
+      if (isBookmarked) {
+          onToggleBookmark(q.id);
+          setShowNoteInput(false);
+      } else {
+          onToggleBookmark(q.id);
+          setShowNoteInput(true);
+      }
+  };
+
+  const saveNote = () => {
+      onUpdateNote(q.id, noteText);
+      setShowNoteInput(false);
+  };
+
+  const handleScoreUpdate = (score) => {
+      setAnswers(prev => ({
+          ...prev,
+          [idx]: { ...prev[idx], marksAwarded: score, isCorrect: score === q.marks }
+      }));
+  };
 
   const submitText = async () => {
     if (!txt.trim()) return;
@@ -528,19 +689,15 @@ const ExamMode = ({ examData, paperResources, onExit, onComplete }) => {
       setMarking(true);
       try {
         const fb = await evaluateAnswerWithGemini(q.questionImg, q.schemeImg, globalRes?.file, txt, q.marks);
-        setAnswers(p => ({ ...p, [idx]: { val: txt, feedback: fb, marksAwarded: 0, isCorrect: null } }));
+        // Initialize marksAwarded to null to indicate "not yet self-verified"
+        setAnswers(p => ({ ...p, [idx]: { val: txt, feedback: fb, marksAwarded: null, isCorrect: null } }));
         setShowExp(true);
       } catch (e) { alert("AI Error"); }
       setMarking(false);
     } else {
-      setAnswers(p => ({ ...p, [idx]: { val: txt, marksAwarded: 0, isCorrect: null } }));
+      setAnswers(p => ({ ...p, [idx]: { val: txt, marksAwarded: null, isCorrect: null } }));
       setShowExp(true);
     }
-  };
-
-  const verify = (correct) => {
-    const awarded = correct ? q.marks : 0;
-    setAnswers(p => ({ ...p, [idx]: { ...p[idx], isCorrect: correct, marksAwarded: awarded } }));
   };
 
   const next = () => {
@@ -581,12 +738,44 @@ const ExamMode = ({ examData, paperResources, onExit, onComplete }) => {
     paddingTop: '6px' // Align text with lines
   };
 
+  // Logic to determine button state
+  // FIX: Allow proceed only if marksAwarded is defined (meaning user selected a score)
+  const isAnswered = answers[idx] !== undefined;
+  const isVerified = answers[idx]?.marksAwarded !== undefined && answers[idx]?.marksAwarded !== null;
+  const canProceed = isAnswered && isVerified;
+  const maxMarks = q.marks || 1; // Default to 1 if undefined
+
   return (
     <div className="min-h-screen bg-slate-50 flex flex-col font-sans">
         <header className="bg-white p-4 border-b flex justify-between items-center sticky top-0 z-10">
             <button onClick={onExit} className="text-slate-500 font-bold flex gap-2 items-center"><ArrowLeft className="w-4 h-4"/> Exit</button>
             <div className="text-sm font-bold">{examData.title} <span className="text-slate-400">Q{idx+1}/{examData.questions.length}</span></div>
-            <button onClick={()=>setChat(!chat)} className="p-2 bg-indigo-50 text-indigo-600 rounded-full"><MessageCircle className="w-4 h-4"/></button>
+            <div className="flex gap-2 relative">
+                <button 
+                    onClick={handleBookmarkClick} 
+                    className={`p-2 rounded-full transition ${isBookmarked ? 'bg-yellow-100 text-yellow-500' : 'bg-gray-100 text-gray-400'}`}
+                >
+                    <Bookmark className={`w-4 h-4 ${isBookmarked ? 'fill-yellow-500' : ''}`} />
+                </button>
+                <button onClick={()=>setChat(!chat)} className="p-2 bg-indigo-50 text-indigo-600 rounded-full"><MessageCircle className="w-4 h-4"/></button>
+
+                {/* Bookmark Note Popup */}
+                {showNoteInput && (
+                    <div className="absolute top-12 right-0 w-64 bg-white rounded-xl shadow-xl border border-gray-200 p-3 z-50 animate-in slide-in-from-top-2">
+                        <div className="text-xs font-bold text-slate-500 mb-2">Add a note (Optional)</div>
+                        <textarea 
+                            value={noteText}
+                            onChange={(e) => setNoteText(e.target.value)}
+                            placeholder="E.g., Review transformer equation..."
+                            className="w-full text-xs p-2 bg-slate-50 rounded border mb-2 h-20 outline-none focus:border-indigo-500"
+                        />
+                        <div className="flex justify-end gap-2">
+                            <button onClick={() => setShowNoteInput(false)} className="text-xs text-slate-500 hover:text-slate-700">Skip</button>
+                            <button onClick={saveNote} className="bg-indigo-600 text-white text-xs px-3 py-1 rounded hover:bg-indigo-700 font-bold">Save</button>
+                        </div>
+                    </div>
+                )}
+            </div>
         </header>
         <main className="flex-1 max-w-3xl mx-auto w-full p-4 pb-32">
             <div className="bg-white p-6 rounded-2xl shadow-sm border mb-4">
@@ -614,26 +803,99 @@ const ExamMode = ({ examData, paperResources, onExit, onComplete }) => {
                 </div>
             ) : (
                 <div className="bg-slate-800 text-white p-6 rounded-2xl shadow-lg animate-in slide-in-from-bottom-4">
-                    {answers[idx]?.feedback && <div className="bg-indigo-900/50 p-4 rounded-xl mb-4 text-sm text-indigo-100 font-serif border border-indigo-700">{answers[idx].feedback}</div>}
-                    <div className="flex justify-between items-center mb-4"><span className="text-xs font-bold uppercase text-slate-400">Self Verify</span></div>
-                    <div className="flex gap-2 mb-6">
-                        <button onClick={()=>verify(false)} className={`flex-1 py-2 rounded font-bold text-sm flex gap-2 justify-center items-center ${answers[idx]?.isCorrect===false?'bg-red-500':'bg-slate-700'}`}><XCircle className="w-4 h-4"/> 0 Marks</button>
-                        <button onClick={()=>verify(true)} className={`flex-1 py-2 rounded font-bold text-sm flex gap-2 justify-center items-center ${answers[idx]?.isCorrect===true?'bg-green-500':'bg-slate-700'}`}><CheckCircle className="w-4 h-4"/> Full Marks</button>
+                    <div className="mb-6">
+                        {answers[idx]?.feedback ? (
+                            <div className={`p-4 rounded-xl border ${answers[idx].feedback.marks_awarded === q.marks ? 'bg-green-900/30 border-green-700' : answers[idx].feedback.marks_awarded > 0 ? 'bg-orange-900/30 border-orange-700' : 'bg-red-900/30 border-red-700'}`}>
+                                <div className="flex items-center gap-3 mb-3">
+                                    <div className={`w-12 h-12 rounded-full flex items-center justify-center font-bold text-xl ${answers[idx].feedback.marks_awarded === q.marks ? 'bg-green-500 text-white' : answers[idx].feedback.marks_awarded > 0 ? 'bg-orange-500 text-white' : 'bg-red-500 text-white'}`}>
+                                        {answers[idx].feedback.marks_awarded}/{q.marks}
+                                    </div>
+                                    <div>
+                                        <div className="font-bold text-lg">{answers[idx].feedback.feedback_title || "Feedback"}</div>
+                                        <div className="text-xs opacity-70">AI Examiner</div>
+                                    </div>
+                                </div>
+                                <p className="text-sm leading-relaxed mb-3">{answers[idx].feedback.feedback_summary}</p>
+                                
+                                {answers[idx].feedback.correct_points?.length > 0 && (
+                                    <div className="mb-2">
+                                        <div className="text-xs font-bold text-green-400 uppercase tracking-wider mb-1 flex items-center gap-1"><Check className="w-3 h-3"/> Correct Points</div>
+                                        <ul className="text-xs space-y-1 list-disc list-inside opacity-90">
+                                            {answers[idx].feedback.correct_points.map((p,i) => <li key={i}>{p}</li>)}
+                                        </ul>
+                                    </div>
+                                )}
+                                
+                                {answers[idx].feedback.missed_points?.length > 0 && (
+                                    <div className="mb-2">
+                                        <div className="text-xs font-bold text-red-400 uppercase tracking-wider mb-1 flex items-center gap-1"><X className="w-3 h-3"/> Missed Points</div>
+                                        <ul className="text-xs space-y-1 list-disc list-inside opacity-90">
+                                            {answers[idx].feedback.missed_points.map((p,i) => <li key={i}>{p}</li>)}
+                                        </ul>
+                                    </div>
+                                )}
+
+                                {answers[idx].feedback.improvement_tip && (
+                                    <div className="mt-3 pt-3 border-t border-white/10">
+                                        <div className="text-xs font-bold text-indigo-300 uppercase tracking-wider mb-1 flex items-center gap-1"><Lightbulb className="w-3 h-3"/> Examiner Tip</div>
+                                        <p className="text-xs italic opacity-90">{answers[idx].feedback.improvement_tip}</p>
+                                    </div>
+                                )}
+                            </div>
+                        ) : (
+                            <div className="p-4 bg-slate-700/50 rounded-xl border border-slate-600 text-center text-slate-400 italic">
+                                No AI Feedback available. Please self-verify.
+                            </div>
+                        )}
                     </div>
+
+                    <div className="mb-6">
+                        <span className="text-xs font-bold uppercase text-slate-400 block mb-2">Self Verify (Score out of {maxMarks})</span>
+                        <div className="flex flex-wrap gap-2">
+                            {Array.from({ length: maxMarks + 1 }, (_, i) => (
+                                <button 
+                                    key={i} 
+                                    onClick={() => handleScoreUpdate(i)}
+                                    className={`px-4 py-2 rounded-lg font-bold text-sm transition ${answers[idx]?.marksAwarded === i ? 'bg-indigo-600 text-white scale-105 ring-2 ring-indigo-300' : 'bg-slate-700 text-slate-300 hover:bg-slate-600'}`}
+                                >
+                                    {i}
+                                </button>
+                            ))}
+                        </div>
+                    </div>
+
                     {q.type!=='image' && <div className="text-sm opacity-80 font-mono mb-4">{q.explanation}</div>}
                     {q.type==='image' && <img src={getImageData(q.schemeImg)} className="w-full rounded mb-4 bg-white"/>}
-                    <button onClick={next} className="w-full bg-white text-slate-900 py-3 rounded-xl font-bold flex justify-center items-center gap-2">Next <ChevronRight className="w-4 h-4"/></button>
+                    
+                    {/* Locked Next Button until verified */}
+                    <div className="relative">
+                        {!canProceed && (
+                            <div className="absolute -top-10 w-full flex justify-center animate-bounce">
+                                <span className="bg-orange-500 text-white text-xs font-bold px-3 py-1 rounded-full shadow-lg flex items-center gap-1">
+                                    <AlertCircle className="w-3 h-3" /> Select score to continue
+                                </span>
+                            </div>
+                        )}
+                        <button 
+                            onClick={next} 
+                            disabled={!canProceed}
+                            className={`w-full py-3 rounded-xl font-bold flex justify-center items-center gap-2 transition ${canProceed ? 'bg-white text-slate-900 hover:bg-gray-100' : 'bg-slate-700 text-slate-500 cursor-not-allowed'}`}
+                        >
+                            {idx < examData.questions.length - 1 ? "Next" : "Finish"} <ChevronRight className="w-4 h-4"/>
+                        </button>
+                    </div>
                 </div>
             )}
         </main>
-        <AskMedly isOpen={chat} onClose={()=>setChat(false)} context={q}/>
+        <AskAtlas isOpen={chat} onClose={()=>setChat(false)} context={q}/>
     </div>
   );
 };
 
-const Dashboard = ({ onSelectExam, onOpenStudio, customDB = [], paperResources, userStats }) => {
-  const [tab, setTab] = useState('papers'); // 'papers' or 'topics'
+const Dashboard = ({ onSelectExam, onOpenStudio, customDB = [], paperResources, userStats, bookmarks, onToggleBookmark, onStartPractice, bookmarkNotes }) => {
+  const [tab, setTab] = useState('papers'); // 'papers', 'topics', 'bookmarks'
   const [subject, setSubject] = useState(null);
+  const [viewingQ, setViewingQ] = useState(null); // For Full Question Viewer Modal
 
   // Extract unique topics from DB for a subject
   const getTopics = (subjCode) => {
@@ -655,6 +917,20 @@ const Dashboard = ({ onSelectExam, onOpenStudio, customDB = [], paperResources, 
         topicMap[t].push(q);
     });
     return topicMap;
+  };
+
+  const getBookmarkedQuestionsByTopic = (subjCode) => {
+      const topicMap = getTopics(subjCode);
+      const bookmarkedMap = {};
+      
+      Object.entries(topicMap).forEach(([topic, questions]) => {
+          const bookmarkedQs = questions.filter(q => bookmarks.includes(q.id));
+          if (bookmarkedQs.length > 0) {
+              bookmarkedMap[topic] = bookmarkedQs;
+          }
+      });
+      
+      return bookmarkedMap;
   };
 
   const startTopicTest = (topicName, questions) => {
@@ -688,19 +964,22 @@ const Dashboard = ({ onSelectExam, onOpenStudio, customDB = [], paperResources, 
 
   if (subject) {
     const topics = getTopics(subject);
+    const bookmarkedTopics = getBookmarkedQuestionsByTopic(subject);
     const subjName = SUBJECTS_DB[subject].name;
+    
     return (
       <div className="min-h-screen bg-slate-50 p-6">
         <div className="max-w-5xl mx-auto">
             <button onClick={()=>setSubject(null)} className="mb-4 flex items-center text-slate-500 font-bold"><ArrowLeft className="w-4 h-4 mr-2"/> Subjects</button>
             <h1 className="text-3xl font-extrabold text-slate-900 mb-6">{subjName}</h1>
             
-            <div className="flex gap-4 mb-8 border-b">
-                <button onClick={()=>setTab('papers')} className={`pb-2 px-4 font-bold ${tab==='papers'?'text-indigo-600 border-b-2 border-indigo-600':'text-slate-400'}`}>Past Papers</button>
-                <button onClick={()=>setTab('topics')} className={`pb-2 px-4 font-bold ${tab==='topics'?'text-indigo-600 border-b-2 border-indigo-600':'text-slate-400'}`}>Topic Mastery</button>
+            <div className="flex gap-4 mb-8 border-b overflow-x-auto">
+                <button onClick={()=>setTab('papers')} className={`pb-2 px-4 font-bold whitespace-nowrap ${tab==='papers'?'text-indigo-600 border-b-2 border-indigo-600':'text-slate-400'}`}>Past Papers</button>
+                <button onClick={()=>setTab('topics')} className={`pb-2 px-4 font-bold whitespace-nowrap ${tab==='topics'?'text-indigo-600 border-b-2 border-indigo-600':'text-slate-400'}`}>Topic Mastery</button>
+                <button onClick={()=>setTab('bookmarks')} className={`pb-2 px-4 font-bold whitespace-nowrap ${tab==='bookmarks'?'text-indigo-600 border-b-2 border-indigo-600':'text-slate-400'}`}>Focused Revision</button>
             </div>
 
-            {tab === 'papers' ? (
+            {tab === 'papers' && (
                 <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
                     {SUBJECTS_DB[subject].years.map(y => (
                         <div key={y} className="bg-white p-4 rounded-xl border shadow-sm hover:shadow-md transition">
@@ -712,7 +991,9 @@ const Dashboard = ({ onSelectExam, onOpenStudio, customDB = [], paperResources, 
                         </div>
                     ))}
                 </div>
-            ) : (
+            )}
+
+            {tab === 'topics' && (
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                     {Object.entries(topics).map(([tName, qs]) => {
                         const stats = userStats[tName] || { correct: 0, total: 0 };
@@ -737,7 +1018,128 @@ const Dashboard = ({ onSelectExam, onOpenStudio, customDB = [], paperResources, 
                     })}
                 </div>
             )}
+
+            {tab === 'bookmarks' && (
+                <div className="space-y-6">
+                    {Object.keys(bookmarkedTopics).length === 0 ? (
+                        <div className="text-center py-12 text-slate-400">
+                            <Bookmark className="w-12 h-12 mx-auto mb-3 opacity-20" />
+                            <p>No questions bookmarked yet.</p>
+                            <p className="text-sm">Star questions during practice to save them here.</p>
+                        </div>
+                    ) : (
+                        Object.entries(bookmarkedTopics).map(([tName, qs]) => (
+                            <div key={tName} className="bg-white rounded-xl border shadow-sm overflow-hidden">
+                                <div className="p-4 border-b bg-slate-50 flex justify-between items-center">
+                                    <div>
+                                        <h3 className="font-bold text-lg text-slate-800">{tName}</h3>
+                                        <span className="text-xs text-slate-500">{qs.length} Saved Questions</span>
+                                    </div>
+                                    <button 
+                                        onClick={() => startTopicTest(tName, qs)}
+                                        className="bg-indigo-600 text-white text-xs font-bold px-4 py-2 rounded-lg flex items-center gap-2 hover:bg-indigo-700 transition"
+                                    >
+                                        <Zap className="w-3 h-3" /> Practice Saved
+                                    </button>
+                                </div>
+                                <div className="divide-y">
+                                    {qs.map((q, i) => (
+                                        <div key={i} className="p-4 flex gap-4 items-start hover:bg-slate-50 transition">
+                                            <div 
+                                                className="w-20 h-20 bg-gray-100 rounded-lg overflow-hidden shrink-0 border cursor-pointer hover:opacity-80 transition"
+                                                onClick={() => setViewingQ(q)}
+                                            >
+                                                {q.type === 'image' ? (
+                                                    <img src={getImageData(Array.isArray(q.questionImg) ? q.questionImg[0] : q.questionImg)} className="w-full h-full object-cover" />
+                                                ) : (
+                                                    <div className="w-full h-full flex items-center justify-center text-xs text-gray-400 p-1 text-center bg-white">{q.text.substring(0, 20)}...</div>
+                                                )}
+                                            </div>
+                                            <div className="flex-1 min-w-0 cursor-pointer" onClick={() => setViewingQ(q)}>
+                                                <div className="flex items-center gap-2 mb-1">
+                                                    <span className="text-[10px] font-bold bg-gray-100 text-gray-600 px-1.5 py-0.5 rounded">{q.year} {q.paper}</span>
+                                                    <span className="text-[10px] font-bold bg-purple-100 text-purple-600 px-1.5 py-0.5 rounded">{q.marks} Marks</span>
+                                                </div>
+                                                <p className="text-sm text-slate-700 line-clamp-2 mb-2">{q.type === 'image' ? 'Click to view full question image...' : q.text}</p>
+                                                {bookmarkNotes[q.id] && (
+                                                    <div className="flex items-start gap-1.5 bg-yellow-50 p-2 rounded border border-yellow-100 text-xs text-yellow-800">
+                                                        <StickyNote className="w-3 h-3 mt-0.5 shrink-0" />
+                                                        <span className="italic">"{bookmarkNotes[q.id]}"</span>
+                                                    </div>
+                                                )}
+                                            </div>
+                                            <div className="flex flex-col gap-2">
+                                                <button 
+                                                    onClick={() => setViewingQ(q)}
+                                                    className="p-2 text-indigo-400 hover:text-indigo-600 hover:bg-indigo-50 rounded"
+                                                    title="View Full Question"
+                                                >
+                                                    <Eye className="w-4 h-4" />
+                                                </button>
+                                                <button 
+                                                    onClick={() => onToggleBookmark(q.id)}
+                                                    className="p-2 text-slate-400 hover:text-red-500 hover:bg-red-50 rounded"
+                                                    title="Remove Bookmark"
+                                                >
+                                                    <Trash2 className="w-4 h-4" />
+                                                </button>
+                                            </div>
+                                        </div>
+                                    ))}
+                                </div>
+                            </div>
+                        ))
+                    )}
+                </div>
+            )}
         </div>
+
+        {/* FULL QUESTION VIEWER MODAL */}
+        {viewingQ && (
+            <div className="fixed inset-0 bg-slate-900/80 backdrop-blur-sm z-50 flex justify-center items-center p-4">
+                <div className="bg-white rounded-2xl w-full max-w-3xl h-[85vh] flex flex-col shadow-2xl overflow-hidden animate-in zoom-in-95">
+                    <div className="bg-white p-4 border-b flex justify-between items-center sticky top-0 z-10">
+                        <div>
+                            <h3 className="font-bold text-lg text-slate-800">{viewingQ.topic || 'Question Viewer'}</h3>
+                            <span className="text-xs text-slate-500">{viewingQ.year} {viewingQ.paper} • {viewingQ.marks} Marks</span>
+                        </div>
+                        <button onClick={() => setViewingQ(null)} className="p-2 hover:bg-gray-100 rounded-full transition"><X className="w-6 h-6 text-slate-500"/></button>
+                    </div>
+                    <div className="flex-1 overflow-y-auto p-6 bg-slate-50">
+                         {/* Note Display */}
+                         {bookmarkNotes[viewingQ.id] && (
+                            <div className="mb-6 p-4 bg-yellow-50 border border-yellow-200 rounded-xl flex gap-3">
+                                <StickyNote className="w-5 h-5 text-yellow-600 shrink-0" />
+                                <div>
+                                    <div className="text-xs font-bold text-yellow-800 uppercase mb-1">Your Note</div>
+                                    <p className="text-sm text-yellow-900">{bookmarkNotes[viewingQ.id]}</p>
+                                </div>
+                            </div>
+                        )}
+
+                        {/* Question Content */}
+                        <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-200 mb-6">
+                            <div className="text-xs font-bold text-slate-400 uppercase mb-2">Question</div>
+                            {viewingQ.type === 'image' ? (
+                                <div className="space-y-2">
+                                    {Array.isArray(viewingQ.questionImg) ? viewingQ.questionImg.map((img,i)=><img key={i} src={getImageData(img)} className="w-full rounded border"/>) : <img src={getImageData(viewingQ.questionImg)} className="w-full rounded border"/>}
+                                </div>
+                            ) : <h2 className="text-lg font-medium">{viewingQ.text}</h2>}
+                        </div>
+
+                        {/* Mark Scheme Toggle */}
+                        <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-200">
+                             <div className="text-xs font-bold text-slate-400 uppercase mb-2">Mark Scheme</div>
+                             {viewingQ.type === 'image' ? (
+                                <img src={getImageData(viewingQ.schemeImg)} className="w-full rounded border"/>
+                             ) : (
+                                <div className="text-sm opacity-80 font-mono">{viewingQ.explanation}</div>
+                             )}
+                        </div>
+                    </div>
+                </div>
+            </div>
+        )}
       </div>
     );
   }
@@ -769,7 +1171,9 @@ const App = () => {
   const [customDB, setCustomDB] = useState([]);
   const [resDB, setResDB] = useState({});
   const [topicSchema, setTopicSchema] = useState({});
-  const [userStats, setUserStats] = useState({}); // { TopicName: { correct: 10, total: 20 } }
+  const [userStats, setUserStats] = useState({}); 
+  const [bookmarks, setBookmarks] = useState([]); // Array of IDs
+  const [bookmarkNotes, setBookmarkNotes] = useState({}); // { id: "note string" }
 
   // 1. LOAD FROM LOCAL STORAGE ON MOUNT
   useEffect(() => {
@@ -777,32 +1181,40 @@ const App = () => {
     const savedRes = localStorage.getItem('medly_resDB');
     const savedSchema = localStorage.getItem('medly_topicSchema');
     const savedStats = localStorage.getItem('medly_userStats');
+    const savedBookmarks = localStorage.getItem('medly_bookmarks');
+    const savedNotes = localStorage.getItem('medly_bookmarkNotes');
 
     if (savedDB) setCustomDB(JSON.parse(savedDB));
     if (savedRes) setResDB(JSON.parse(savedRes));
     if (savedSchema) setTopicSchema(JSON.parse(savedSchema));
     if (savedStats) setUserStats(JSON.parse(savedStats));
+    if (savedBookmarks) setBookmarks(JSON.parse(savedBookmarks));
+    if (savedNotes) setBookmarkNotes(JSON.parse(savedNotes));
   }, []);
 
   // 2. SAVE TO LOCAL STORAGE WHENEVER STATE CHANGES
-  useEffect(() => { 
-      try {
-          localStorage.setItem('medly_customDB', JSON.stringify(customDB)); 
-      } catch (e) {
-          console.warn("Quota exceeded for customDB");
-      }
-  }, [customDB]);
-  
-  useEffect(() => { 
-      try {
-          localStorage.setItem('medly_resDB', JSON.stringify(resDB)); 
-      } catch (e) {
-          console.warn("Quota exceeded for resDB");
-      }
-  }, [resDB]);
-  
+  useEffect(() => { try { localStorage.setItem('medly_customDB', JSON.stringify(customDB)); } catch (e) { console.warn("Quota exceeded"); } }, [customDB]);
+  useEffect(() => { try { localStorage.setItem('medly_resDB', JSON.stringify(resDB)); } catch (e) { console.warn("Quota exceeded"); } }, [resDB]);
   useEffect(() => { localStorage.setItem('medly_topicSchema', JSON.stringify(topicSchema)); }, [topicSchema]);
   useEffect(() => { localStorage.setItem('medly_userStats', JSON.stringify(userStats)); }, [userStats]);
+  useEffect(() => { localStorage.setItem('medly_bookmarks', JSON.stringify(bookmarks)); }, [bookmarks]);
+  useEffect(() => { localStorage.setItem('medly_bookmarkNotes', JSON.stringify(bookmarkNotes)); }, [bookmarkNotes]);
+
+  const toggleBookmark = (id) => {
+      setBookmarks(prev => prev.includes(id) ? prev.filter(b => b !== id) : [...prev, id]);
+  };
+
+  const updateBookmarkNote = (id, note) => {
+      setBookmarkNotes(prev => {
+          const newNotes = { ...prev };
+          if (note && note.trim() !== "") {
+              newNotes[id] = note;
+          } else {
+              delete newNotes[id];
+          }
+          return newNotes;
+      });
+  };
 
   const handleExamComplete = (answers, examInfo) => {
     // Update stats based on results
@@ -822,9 +1234,27 @@ const App = () => {
     <>
       {studio && <TeacherStudio customQuestions={customDB} setCustomQuestions={setCustomDB} paperResources={resDB} setPaperResources={setResDB} topicSchema={topicSchema} setTopicSchema={setTopicSchema} onClose={()=>setStudio(false)} />}
       {view === 'exam' && examData ? (
-        <ExamMode examData={examData} paperResources={resDB} onExit={()=>setView('dash')} onComplete={handleExamComplete} />
+        <ExamMode 
+            examData={examData} 
+            paperResources={resDB} 
+            onExit={()=>setView('dash')} 
+            onComplete={handleExamComplete}
+            bookmarks={bookmarks}
+            onToggleBookmark={toggleBookmark}
+            onUpdateNote={updateBookmarkNote}
+            bookmarkNotes={bookmarkNotes}
+        />
       ) : (
-        <Dashboard onSelectExam={(d)=>{setExamData(d); setView('exam');}} onOpenStudio={()=>setStudio(true)} customDB={customDB} paperResources={resDB} userStats={userStats} />
+        <Dashboard 
+            onSelectExam={(d)=>{setExamData(d); setView('exam');}} 
+            onOpenStudio={()=>setStudio(true)} 
+            customDB={customDB} 
+            paperResources={resDB} 
+            userStats={userStats}
+            bookmarks={bookmarks}
+            onToggleBookmark={toggleBookmark}
+            bookmarkNotes={bookmarkNotes}
+        />
       )}
     </>
   );
