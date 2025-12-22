@@ -46,8 +46,69 @@ import {
   Bookmark,
   Star,
   Eye,
-  StickyNote
+  StickyNote,
+  FolderUp,
+  Files,
+  ArrowRight,
+  Lock,
+  Unlock
 } from 'lucide-react';
+
+/**
+ * --- INDEXEDDB HELPER ---
+ */
+const DB_NAME = 'ExamAtlasDB';
+const DB_VERSION = 2;
+const STORES = ['customQuestions', 'paperResources', 'userStats', 'bookmarks', 'bookmarkNotes', 'topicSchema'];
+
+const idb = {
+  open: () => {
+    return new Promise((resolve, reject) => {
+      if (!window.indexedDB) {
+          reject(new Error("IndexedDB not supported"));
+          return;
+      }
+      const request = indexedDB.open(DB_NAME, DB_VERSION);
+      request.onupgradeneeded = (e) => {
+        const db = e.target.result;
+        STORES.forEach(store => {
+          if (!db.objectStoreNames.contains(store)) db.createObjectStore(store);
+        });
+      };
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error);
+    });
+  },
+  get: async (storeName) => {
+    try {
+        const db = await idb.open();
+        return new Promise((resolve, reject) => {
+          const tx = db.transaction(storeName, 'readonly');
+          const store = tx.objectStore(storeName);
+          const request = store.get('data');
+          request.onsuccess = () => resolve(request.result);
+          request.onerror = () => reject(request.error);
+        });
+    } catch (e) {
+        console.warn(`IDB Get Error (${storeName}):`, e);
+        return null;
+    }
+  },
+  set: async (storeName, data) => {
+    try {
+        const db = await idb.open();
+        return new Promise((resolve, reject) => {
+          const tx = db.transaction(storeName, 'readwrite');
+          const store = tx.objectStore(storeName);
+          const request = store.put(data, 'data');
+          request.onsuccess = () => resolve();
+          request.onerror = () => reject(request.error);
+        });
+    } catch (e) {
+        console.warn(`IDB Set Error (${storeName}):`, e);
+    }
+  }
+};
 
 /**
  * --- API & HELPERS ---
@@ -62,29 +123,21 @@ const getMimeType = (base64Str) => {
   return 'image/png';
 };
 
-// HELPER: Extract Data (Handles Object vs String image formats)
 const getImageData = (img) => {
     return (typeof img === 'object' && img !== null) ? img.data : img;
 };
 
-// GEMINI API: Chat with Atlas
 const chatWithAtlas = async (questionImg, schemeImg, userQuery) => {
-  const apiKey = import.meta.env.VITE_GEMINI_API_KEY || ""; 
+  const apiKey = ""; 
   const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${apiKey}`;
 
   const prompt = `
     You are Atlas, an expert AI Exam Tutor.
-    The student is asking a question about the exam problem in the image(s) provided.
-    
     Student Query: "${userQuery}"
-    
     Instructions:
-    - Format your answer nicely using **bolding** for keywords and bullet points (-) for lists.
-    - Use LaTeX formatting for all math formulas, enclosing them in double dollar signs like this: $$E=mc^2$$.
-    - Keep paragraphs short and readable.
     - Answer helpfully, encouragingly, and concisely.
-    - If the student asks for the answer directly, provide a strong hint or the first step.
-    - Use the provided Mark Scheme (if available) to ensure your explanation aligns with the official requirements.
+    - Format answers nicely using bolding and lists.
+    - Use the provided context to explain.
   `;
 
   const parts = [{ text: prompt }];
@@ -106,32 +159,18 @@ const chatWithAtlas = async (questionImg, schemeImg, userQuery) => {
   } catch (error) { return "I'm having trouble connecting to my brain. Please try again."; }
 };
 
-// GEMINI API: Detect Topic
 const detectTopicFromImage = async (questionImg, board, subject, paper, topicSchema) => {
-  const apiKey= import.meta.env.VITE_GEMINI_API_KEY || "";
+  const apiKey = ""; 
   const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${apiKey}`;
 
   const schemaKey = `${board.toUpperCase()}-${subject.toUpperCase()}-${paper.toUpperCase()}`;
   const validTopics = topicSchema?.[schemaKey] || [];
 
-  let promptContext = "";
-  if (validTopics.length > 0) {
-      promptContext = `
-      CRITICAL INSTRUCTION: You are strictly bound to a specific curriculum list.
-      You MUST classify the image into exactly ONE of the topics from the list below.
-      
-      VALID TOPICS LIST:
-      ${validTopics.map(t => `- "${t}"`).join('\n')}
-      `;
-  } else {
-      promptContext = `Classify it into ONE single academic topic string strictly based on the official ${board} ${subject} syllabus.`;
-  }
+  let promptContext = validTopics.length > 0 
+      ? `Classify into ONE topic from: ${validTopics.join(', ')}`
+      : `Classify strictly based on ${board} ${subject} syllabus.`;
 
-  const prompt = `
-    Analyze this exam question image. 
-    ${promptContext}
-    Return ONLY the topic name. No explanations.
-  `;
+  const prompt = `Analyze this exam question image. ${promptContext}. Return ONLY the topic name.`;
 
   const parts = [{ text: prompt }];
   const images = Array.isArray(questionImg) ? questionImg : [questionImg];
@@ -150,9 +189,9 @@ const detectTopicFromImage = async (questionImg, board, subject, paper, topicSch
 };
 
 const detectMarksFromImage = async (questionImg) => {
-  const apiKey= import.meta.env.VITE_GEMINI_API_KEY || "";
+  const apiKey = "";
   const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${apiKey}`;
-  const prompt = `Find the max marks (e.g. [3 marks]). Return ONLY the integer.`;
+  const prompt = `Find the max marks. Return ONLY the integer.`;
   const parts = [{ text: prompt }];
   const images = Array.isArray(questionImg) ? questionImg : [questionImg];
   images.forEach(img => { 
@@ -169,9 +208,9 @@ const detectMarksFromImage = async (questionImg) => {
 };
 
 const detectLinesFromImage = async (questionImg) => {
-  const apiKey = import.meta.env.VITE_GEMINI_API_KEY || "";
+  const apiKey = "";
   const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${apiKey}`;
-  const prompt = `Count the number of horizontal ruled lines for the answer. Return ONLY the integer. If none, return 0.`;
+  const prompt = `Count horizontal answer lines. Return ONLY integer. If none, return 0.`;
   const parts = [{ text: prompt }];
   const images = Array.isArray(questionImg) ? questionImg : [questionImg];
   images.forEach(img => { 
@@ -188,23 +227,35 @@ const detectLinesFromImage = async (questionImg) => {
   } catch (error) { return 4; }
 };
 
-const evaluateAnswerWithGemini = async (questionImg, schemeImg, globalSchemePdf, userAnswer, marks) => {
-  const apiKey = import.meta.env.VITE_GEMINI_API_KEY || "";
+const evaluateAnswerWithGemini = async (questionImg, schemeImg, globalSchemePdf, userAnswer, marks, questionText, schemeText) => {
+  const apiKey = "";
   const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${apiKey}`;
 
   let prompt = `
-    You are a strict academic examiner.
-    Task: Mark the student's answer based on the provided Mark Scheme.
-    Data:
-    - Max Marks: ${marks}
-    - Student Answer: "${userAnswer}"
+    Task: Mark student answer.
+    Max Marks: ${marks}
+    Student Answer: "${userAnswer}"
   `;
-  if (globalSchemePdf) prompt += `\n- Use the Global Guidance PDF for general marking rules (sig figs, etc).`;
-  if (schemeImg) prompt += `\n- Use the specific Mark Scheme Image provided.`;
+  
+  const parts = [];
+  if (questionText && schemeText) {
+      prompt += `\nContext: ${questionText}\nCriteria: ${schemeText}`;
+  } else {
+      const qImages = Array.isArray(questionImg) ? questionImg : [questionImg];
+      qImages.forEach(img => { 
+          const b64 = getImageData(img);
+          if(b64) parts.push({ inlineData: { mimeType: "image/png", data: stripBase64Header(b64) } }); 
+      });
+      if (schemeImg) {
+          const sData = getImageData(schemeImg);
+          if(sData) parts.push({ inlineData: { mimeType: "image/png", data: stripBase64Header(sData) } });
+      }
+  }
 
+  if (globalSchemePdf) parts.push({ inlineData: { mimeType: "application/pdf", data: stripBase64Header(globalSchemePdf) } });
+  
   prompt += `
-    Output strictly in this JSON format:
-    {
+    Output JSON: {
       "marks_awarded": number,
       "feedback_title": "string",
       "feedback_summary": "string",
@@ -213,22 +264,9 @@ const evaluateAnswerWithGemini = async (questionImg, schemeImg, globalSchemePdf,
       "improvement_tip": "string"
     }
   `;
+  parts.unshift({ text: prompt });
 
-  const parts = [{ text: prompt }];
-  const qImages = Array.isArray(questionImg) ? questionImg : [questionImg];
-  qImages.forEach(img => { 
-      const b64 = getImageData(img);
-      if(b64) parts.push({ inlineData: { mimeType: "image/png", data: stripBase64Header(b64) } }); 
-  });
-  if (schemeImg) {
-      const sData = getImageData(schemeImg);
-      if(sData) parts.push({ inlineData: { mimeType: "image/png", data: stripBase64Header(sData) } });
-  }
-  if (globalSchemePdf) parts.push({ inlineData: { mimeType: "application/pdf", data: stripBase64Header(globalSchemePdf) } });
-
-  const delays = [1000, 2000, 4000, 8000, 16000];
-  for (let i = 0; i < 5; i++) {
-    try {
+  try {
       const response = await fetch(url, { 
           method: 'POST', 
           headers: { 'Content-Type': 'application/json' }, 
@@ -237,11 +275,47 @@ const evaluateAnswerWithGemini = async (questionImg, schemeImg, globalSchemePdf,
       if (!response.ok) throw new Error(`API Error`);
       const data = await response.json();
       return JSON.parse(data.candidates?.[0]?.content?.parts?.[0]?.text);
-    } catch (error) { 
-        if (i === 4) return { marks_awarded: 0, feedback_title: "Error", feedback_summary: "Could not generate marking.", correct_points: [], missed_points: [], improvement_tip: "Please try again." }; 
-        await new Promise(r => setTimeout(r, delays[i])); 
-    }
+  } catch (error) { 
+      return { marks_awarded: 0, feedback_title: "Error", feedback_summary: "Marking failed.", correct_points: [], missed_points: [], improvement_tip: "Please try again." }; 
   }
+};
+
+const analyzeQuestionData = async (questionImg, schemeImg, board, subject, paper, topicSchema) => {
+  const apiKey = ""; 
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${apiKey}`;
+
+  const schemaKey = `${board.toUpperCase()}-${subject.toUpperCase()}-${paper.toUpperCase()}`;
+  const validTopics = topicSchema?.[schemaKey] || [];
+  let topicInstruction = validTopics.length > 0 ? `Classify into ONE topic: ${validTopics.join(', ')}` : `Classify by syllabus.`;
+
+  const prompt = `
+    Analyze images. Extract metadata.
+    1. ${topicInstruction}
+    2. Max Marks (int).
+    3. Ruled Lines (int).
+    4. Question Text (OCR).
+    5. Mark Scheme Text (OCR).
+
+    Output JSON: { "topic": "string", "marks": number, "lines": number, "question_text": "string", "scheme_text": "string" }
+  `;
+
+  const parts = [{ text: prompt }];
+  const images = Array.isArray(questionImg) ? questionImg : [questionImg];
+  images.forEach(img => { 
+      const b64 = getImageData(img);
+      if(b64) parts.push({ inlineData: { mimeType: "image/png", data: stripBase64Header(b64) } }); 
+  });
+  if (schemeImg) {
+      const sData = getImageData(schemeImg);
+      if(sData) parts.push({ inlineData: { mimeType: "image/png", data: stripBase64Header(sData) } }); 
+  }
+
+  try {
+    const response = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ contents: [{ parts }], generationConfig: { responseMimeType: "application/json" } }) });
+    if (!response.ok) throw new Error(`API Error`);
+    const data = await response.json();
+    return JSON.parse(data.candidates?.[0]?.content?.parts?.[0]?.text);
+  } catch (error) { return { topic: "Uncategorized", marks: 1, lines: 4, question_text: "", scheme_text: "" }; }
 };
 
 const fileToBase64 = (file) => new Promise((resolve, reject) => {
@@ -277,10 +351,7 @@ const parseCSV = (text) => {
  * --- DATA & COMPONENTS ---
  */
 const STATIC_TOPICS_DB = {
-  PHYSICS: {
-    P1: [{ id: "p1-static-1", type: "text", topic: "Energy", marks: 3, lines: 4, text: (year) => `[${year} Q1] A student heats water...`, keywords: ["joules"], explanation: "Use E=mcT" }],
-    P2: []
-  },
+  PHYSICS: { P1: [], P2: [] },
   CHEMISTRY: { P1: [], P2: [] }
 };
 
@@ -308,57 +379,34 @@ const AskAtlas = ({ context, isOpen, onClose }) => {
     if (!window.katex) {
         const script = document.createElement('script');
         script.src = "https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js";
-        script.onload = () => setKatexLoaded(true);
         document.head.appendChild(script);
-    } else {
-        setKatexLoaded(true);
     }
   }, []);
 
   useEffect(() => { if (scrollRef.current) scrollRef.current.scrollTop = scrollRef.current.scrollHeight; }, [messages, isThinking]);
   
-  // Enhanced Text Formatting with KaTeX support
   const formatText = (text) => {
-      // Split by newlines first
-      return text.split('\n').map((line, i) => {
-          // Identify Math blocks ($$ or $) and Bold (** **)
-          const parts = line.split(/(\$\$[\s\S]+?\$\$|\$[\s\S]+?\$|\*\*[\s\S]+?\*\*)/g);
-          
-          return (
-              <p key={i} className="mb-2 last:mb-0 leading-relaxed break-words">
-                  {parts.map((part, j) => {
-                      if (part.startsWith('$$') && part.endsWith('$$')) {
-                          // Block Math
-                          const tex = part.slice(2, -2);
-                          if (window.katex) {
-                              try {
-                                  const html = window.katex.renderToString(tex, { displayMode: false });
-                                  return <span key={j} dangerouslySetInnerHTML={{ __html: html }} className="mx-1" />;
-                              } catch (e) { return <code key={j} className="text-xs bg-gray-100 p-1 rounded">{tex}</code>; }
-                          } else {
-                              return <code key={j} className="text-xs bg-gray-100 p-1 rounded">{tex}</code>;
-                          }
-                      } else if (part.startsWith('$') && part.endsWith('$')) {
-                          // Inline Math
-                          const tex = part.slice(1, -1);
-                          if (window.katex) {
-                              try {
-                                  const html = window.katex.renderToString(tex, { displayMode: false });
-                                  return <span key={j} dangerouslySetInnerHTML={{ __html: html }} className="mx-1" />;
-                              } catch (e) { return <code key={j} className="text-xs bg-gray-100 p-1 rounded">{tex}</code>; }
-                          } else {
-                              return <code key={j} className="text-xs bg-gray-100 p-1 rounded">{tex}</code>;
-                          }
-                      } else if (part.startsWith('**') && part.endsWith('**')) {
-                          // Bold
-                          return <strong key={j} className="text-indigo-700">{part.slice(2, -2)}</strong>;
+      return text.split('\n').map((line, i) => (
+          <p key={i} className="mb-2 last:mb-0 leading-relaxed break-words">
+              {line.split(/(\*\*.*?\*\*)/).map((part, j) => {
+                  if (part.startsWith('$$') && part.endsWith('$$')) {
+                      const tex = part.slice(2, -2);
+                      if (window.katex) {
+                          try {
+                              const html = window.katex.renderToString(tex, { displayMode: false });
+                              return <span key={j} dangerouslySetInnerHTML={{ __html: html }} className="mx-1" />;
+                          } catch (e) { return <code key={j} className="text-xs bg-gray-100 p-1 rounded">{tex}</code>; }
                       } else {
-                          return part;
+                          return <code key={j} className="text-xs bg-gray-100 p-1 rounded">{tex}</code>;
                       }
-                  })}
-              </p>
-          );
-      });
+                  } else if (part.startsWith('**') && part.endsWith('**')) {
+                      return <strong key={j} className="text-indigo-700">{part.slice(2, -2)}</strong>;
+                  } else {
+                      return part;
+                  }
+              })}
+          </p>
+      ));
   };
 
   const handleSend = async () => {
@@ -391,17 +439,100 @@ const AskAtlas = ({ context, isOpen, onClose }) => {
   );
 };
 
+// --- BULK UPLOAD HELPER FUNCTIONS ---
+const processBulkUploads = (questionFiles, schemeFiles) => {
+    // 1. Group Schemes by ID (m1.1.png -> 1.1)
+    const schemeMap = {};
+    schemeFiles.forEach(f => {
+        const match = f.name.match(/m(\d+(\.\d+)*)/i);
+        if(match) {
+            const id = match[1]; // "1.2"
+            schemeMap[id] = f;
+        }
+    });
+
+    const rows = [];
+    const sortedIds = Object.keys(schemeMap).sort((a,b) => a.localeCompare(b, undefined, {numeric: true}));
+
+    // Context Accumulator
+    const contextMap = {};
+
+    sortedIds.forEach(id => {
+        const majorId = id.split('.')[0]; 
+        if (!contextMap[majorId]) contextMap[majorId] = [];
+        
+        const rowImages = [];
+
+        // A. Add Root (e.g. 1.png)
+        const rootFile = questionFiles.find(f => f.name === `${majorId}.png` || f.name === `Q${majorId}.png`);
+        if (rootFile) rowImages.push({ file: rootFile, type: 'root' });
+
+        // B. Find Specifics
+        const specifics = questionFiles.filter(f => f.name.startsWith(id));
+        
+        // Update Contexts with .plus files
+        specifics.forEach(f => {
+            if (f.name.includes('plus')) {
+                if (!contextMap[majorId].find(cf => cf.name === f.name)) {
+                    contextMap[majorId].push(f);
+                }
+            }
+        });
+
+        // C. Add Accumulated Contexts
+        contextMap[majorId].forEach(cf => {
+             if (!rowImages.find(r => r.file.name === cf.name)) {
+                 rowImages.push({ file: cf, type: 'context' });
+             }
+        });
+
+        // D. Add Specifics
+        specifics.forEach(f => {
+             if (!rowImages.find(r => r.file.name === f.name)) {
+                 rowImages.push({ file: f, type: 'specific' });
+             }
+        });
+
+        rows.push({
+            id: id, 
+            images: rowImages.map(r => r.file),
+            scheme: schemeMap[id],
+            topic: "Pending...",
+            marks: 0,
+            lines: 4,
+            questionText: "",
+            schemeText: ""
+        });
+    });
+
+    return rows;
+};
+
 const TeacherStudio = ({ customQuestions, setCustomQuestions, paperResources, setPaperResources, topicSchema, setTopicSchema, onClose }) => {
-    // ... (This component remains largely the same, included for completeness)
-    // Minimizing for brevity, logic identical to previous but ensured imports exist
   const [activeTab, setActiveTab] = useState('questions');
   const [newQ, setNewQ] = useState({ board: "AQA", subject: "PHYSICS", year: "2018", paper: "P1", topic: "General", questionImg: [], schemeImg: null, marks: 4, lines: 4 });
   const [newRes, setNewRes] = useState({ board: "AQA", subject: "PHYSICS", year: "2018", paper: "P1", type: "scheme", file: null, fileName: "" });
+  
+  const [bulkConfig, setBulkConfig] = useState({ board: "AQA", subject: "PHYSICS", year: "2018", paper: "P1" });
+  const [bulkFiles, setBulkFiles] = useState({ questions: [], schemes: [] });
+  const [stagingRows, setStagingRows] = useState([]);
+  const [isProcessingBulk, setIsProcessingBulk] = useState(false);
+
   const [loading, setLoading] = useState(false);
   const [detecting, setDetecting] = useState("");
   const [libFilter, setLibFilter] = useState({ subject: 'ALL', year: 'ALL', paper: 'ALL' });
   const [reclassifying, setReclassifying] = useState(null); 
   const [bulkProcessing, setBulkProcessing] = useState(false);
+
+  // Moved Derived Calculations here to avoid Reference Errors
+  const filteredQuestions = customQuestions.filter(q => {
+      if (libFilter.subject !== 'ALL' && q.subject !== libFilter.subject) return false;
+      if (libFilter.year !== 'ALL' && q.year !== parseInt(libFilter.year)) return false;
+      if (libFilter.paper !== 'ALL' && q.paper !== libFilter.paper) return false;
+      return true;
+  });
+  
+  const untaggedCount = customQuestions.filter(q => !q.topic || q.topic === 'General' || q.topic === 'Uncategorized').length;
 
   const handleImgs = async (e) => {
     const files = Array.from(e.target.files);
@@ -410,14 +541,17 @@ const TeacherStudio = ({ customQuestions, setCustomQuestions, paperResources, se
         try{ 
             const newImages = await Promise.all(files.map(async f => ({ data: await fileToBase64(f), name: f.name }))); 
             const updatedImages = [...newQ.questionImg, ...newImages];
-            setNewQ(p=>({...p, questionImg: updatedImages})); 
+            let filenameLines = 0;
+            files.forEach(f => { const match = f.name.match(/-(\d+)\./); if(match) filenameLines = parseInt(match[1]); });
+            setNewQ(p=>({...p, questionImg: updatedImages, lines: filenameLines || p.lines })); 
+            
             setDetecting("auto");
             const [m, l, t] = await Promise.all([
                 detectMarksFromImage(updatedImages),
                 detectLinesFromImage(updatedImages),
                 detectTopicFromImage(updatedImages, newQ.board, newQ.subject, newQ.paper, topicSchema)
             ]);
-            setNewQ(p => ({ ...p, marks: m > 0 ? m : p.marks, lines: l > 0 ? l : p.lines, topic: t !== "Uncategorized" ? t : p.topic }));
+            setNewQ(p => ({ ...p, marks: m > 0 ? m : p.marks, lines: filenameLines > 0 ? filenameLines : (l > 0 ? l : p.lines), topic: t !== "Uncategorized" ? t : p.topic }));
             setDetecting("");
         }catch(e){ console.error(e); } 
         setLoading(false); e.target.value = null; 
@@ -454,7 +588,7 @@ const TeacherStudio = ({ customQuestions, setCustomQuestions, paperResources, se
                   setTopicSchema(prev => ({...prev, ...schemaData}));
                   const key = `SCHEMA-FILE-${f.name}`;
                   setPaperResources(prev => ({...prev, [key]: { fileName: f.name, type: 'schema', board: 'ALL' }}));
-                  alert(`Schema Loaded: ${Object.keys(schemaData).length} paper configurations found.`);
+                  alert(`Schema Loaded.`);
                   setLoading(false);
                   return; 
               }
@@ -467,11 +601,91 @@ const TeacherStudio = ({ customQuestions, setCustomQuestions, paperResources, se
   
   const addRes = () => { 
       if(!newRes.file) return alert("No file."); 
-      setPaperResources(p=>({...p, [`${newRes.board}-${newRes.subject}-${newRes.year}-${newRes.paper}-${newRes.type}`]: {
-          file:newRes.file, fileName:newRes.fileName, board: newRes.board, type: newRes.type
-      }})); 
+      setPaperResources(p=>({...p, [`${newRes.board}-${newRes.subject}-${newRes.year}-${newRes.paper}-${newRes.type}`]: { file:newRes.file, fileName:newRes.fileName, board: newRes.board, type: newRes.type }})); 
       setNewRes(p=>({...p, file:null, fileName:""})); 
       alert("Resource Saved!"); 
+  };
+
+  const handleBulkDrop = (e, type) => {
+      const files = Array.from(e.target.files);
+      setBulkFiles(prev => ({ ...prev, [type]: [...prev[type], ...files] }));
+  };
+
+  const generateStaging = () => {
+      if (bulkFiles.schemes.length === 0) return alert("Please upload Mark Schemes first.");
+      const rows = processBulkUploads(bulkFiles.questions, bulkFiles.schemes);
+      setStagingRows(rows);
+  };
+
+  const removeStagingImage = (rowIdx, imgIdx) => {
+      setStagingRows(prev => {
+          const copy = [...prev];
+          copy[rowIdx].images = copy[rowIdx].images.filter((_, i) => i !== imgIdx);
+          return copy;
+      });
+  };
+
+  const addImageToRow = async (rowIdx, e) => {
+      const files = Array.from(e.target.files);
+      if (files.length === 0) return;
+      setStagingRows(prev => {
+          const copy = [...prev];
+          copy[rowIdx].images = [...copy[rowIdx].images, ...files];
+          return copy;
+      });
+      e.target.value = null; 
+  };
+
+  const autoAnalyzeRow = async (idx) => {
+      const row = stagingRows[idx];
+      const imagesB64 = await Promise.all(row.images.map(async f => ({ data: await fileToBase64(f), name: f.name })));
+      const schemeB64 = await fileToBase64(row.scheme);
+      
+      const result = await analyzeQuestionData(imagesB64, { data: schemeB64, name: row.scheme.name }, bulkConfig.board, bulkConfig.subject, bulkConfig.paper, topicSchema);
+      let overrideLines = 0;
+      row.images.forEach(img => { const match = img.name.match(/-(\d+)\./); if(match) overrideLines = parseInt(match[1]); });
+
+      setStagingRows(prev => {
+          const copy = [...prev];
+          copy[idx] = { ...copy[idx], marks: result.marks || 1, lines: overrideLines > 0 ? overrideLines : (result.lines || 4), topic: result.topic || "General", questionText: result.question_text || "", schemeText: result.scheme_text || "" };
+          return copy;
+      });
+  };
+
+  const analyzeAllStaging = async () => {
+      setIsProcessingBulk(true);
+      for (let i = 0; i < stagingRows.length; i++) { await autoAnalyzeRow(i); await new Promise(r => setTimeout(r, 500)); }
+      setIsProcessingBulk(false);
+  };
+
+  const commitBulk = async () => {
+      setIsProcessingBulk(true);
+      const newQuestions = [];
+      for (const row of stagingRows) {
+          const qImgs = await Promise.all(row.images.map(async f => ({ data: await fileToBase64(f), name: f.name })));
+          const sImg = await fileToBase64(row.scheme);
+          newQuestions.push({
+              id: `bulk-${Date.now()}-${row.id}`,
+              type: 'image',
+              board: bulkConfig.board,
+              subject: bulkConfig.subject,
+              year: parseInt(bulkConfig.year),
+              paper: bulkConfig.paper,
+              topic: row.topic,
+              marks: row.marks,
+              lines: row.lines,
+              questionImg: qImgs,
+              schemeImg: { data: sImg, name: row.scheme.name },
+              questionText: row.questionText,
+              schemeText: row.schemeText,
+              timestamp: Date.now()
+          });
+      }
+      setCustomQuestions(prev => [...prev, ...newQuestions]);
+      setStagingRows([]);
+      setBulkFiles({ questions: [], schemes: [] });
+      setIsProcessingBulk(false);
+      alert(`Successfully added ${newQuestions.length} questions!`);
   };
 
   const exportDB = () => {
@@ -503,6 +717,7 @@ const TeacherStudio = ({ customQuestions, setCustomQuestions, paperResources, se
 
   const classifyAllQuestions = async () => {
       setBulkProcessing(true);
+      // Now safe to use filteredQuestions as it is defined above
       const targets = filteredQuestions;
       for (const item of targets) {
           try {
@@ -520,35 +735,145 @@ const TeacherStudio = ({ customQuestions, setCustomQuestions, paperResources, se
       alert(`Refined topics!`);
   };
 
-  const filteredQuestions = customQuestions.filter(q => {
-      if (libFilter.subject !== 'ALL' && q.subject !== libFilter.subject) return false;
-      if (libFilter.year !== 'ALL' && q.year !== parseInt(libFilter.year)) return false;
-      if (libFilter.paper !== 'ALL' && q.paper !== libFilter.paper) return false;
-      return true;
-  });
-
-  const untaggedCount = customQuestions.filter(q => !q.topic || q.topic === 'General' || q.topic === 'Uncategorized').length;
-
   return (
     <div className="fixed inset-0 bg-slate-900/50 backdrop-blur-sm z-50 flex justify-center items-center p-4">
-      <div className="bg-white rounded-3xl w-full max-w-4xl h-[90vh] flex flex-col shadow-2xl overflow-hidden">
+      <div className="bg-white rounded-3xl w-full max-w-5xl h-[95vh] flex flex-col shadow-2xl overflow-hidden">
         <div className="bg-slate-900 text-white p-4 flex justify-between items-center">
           <h2 className="text-lg font-bold flex gap-2"><PenTool className="w-5 h-5"/> Teacher Studio</h2>
           <button onClick={onClose}><X className="w-6 h-6 hover:text-red-400"/></button>
         </div>
         <div className="flex border-b">
-            {['questions', 'resources'].map(t => (
+            {['questions', 'resources', 'bulk upload'].map(t => (
                 <button key={t} onClick={()=>setActiveTab(t)} className={`flex-1 py-3 text-sm font-bold capitalize ${activeTab===t?'text-indigo-600 border-b-2 border-indigo-600':'text-slate-500'}`}>{t}</button>
             ))}
         </div>
         <div className="flex-1 flex overflow-hidden">
-            <div className="w-1/3 bg-slate-50 p-4 border-r overflow-y-auto space-y-4">
-                {activeTab === 'questions' ? (
-                    <>
-                        <div className="grid grid-cols-2 gap-2">
+            {activeTab === 'bulk upload' ? (
+                <div className="w-full p-6 overflow-y-auto bg-slate-50">
+                     <div className="bg-white p-4 rounded-xl border shadow-sm mb-6">
+                        <h3 className="font-bold text-slate-800 mb-3 text-sm">1. Batch Configuration</h3>
+                        <div className="flex gap-4">
+                            <select value={bulkConfig.board} onChange={e=>setBulkConfig({...bulkConfig, board:e.target.value})} className="p-2 border rounded text-sm"><option value="AQA">AQA</option><option value="Edexcel">Edexcel</option></select>
+                            <select value={bulkConfig.subject} onChange={e=>setBulkConfig({...bulkConfig, subject:e.target.value})} className="p-2 border rounded text-sm"><option value="PHYSICS">Physics</option><option value="CHEMISTRY">Chemistry</option></select>
+                            <select value={bulkConfig.year} onChange={e=>setBulkConfig({...bulkConfig, year:e.target.value})} className="p-2 border rounded text-sm">{[2018,2019,2020,2021,2022,2023,2024,2025].map(y=><option key={y} value={y}>{y}</option>)}</select>
+                            <select value={bulkConfig.paper} onChange={e=>setBulkConfig({...bulkConfig, paper:e.target.value})} className="p-2 border rounded text-sm"><option value="P1">Paper 1</option><option value="P2">Paper 2</option></select>
+                        </div>
+                     </div>
+
+                     {stagingRows.length === 0 && (
+                         <div className="grid grid-cols-2 gap-6 mb-6">
+                             <div className="border-2 border-dashed border-purple-300 bg-purple-50 rounded-xl p-8 text-center relative hover:bg-purple-100 transition">
+                                 <input type="file" multiple onChange={(e) => handleBulkDrop(e, 'schemes')} className="absolute inset-0 opacity-0 cursor-pointer" />
+                                 <FolderUp className="w-10 h-10 text-purple-500 mx-auto mb-2" />
+                                 <div className="font-bold text-purple-700">1. Mark Schemes (Anchors)</div>
+                                 <div className="text-xs text-purple-600 mt-1">{bulkFiles.schemes.length} files selected</div>
+                             </div>
+                             <div className="border-2 border-dashed border-blue-300 bg-blue-50 rounded-xl p-8 text-center relative hover:bg-blue-100 transition">
+                                 <input type="file" multiple onChange={(e) => handleBulkDrop(e, 'questions')} className="absolute inset-0 opacity-0 cursor-pointer" />
+                                 <Files className="w-10 h-10 text-blue-500 mx-auto mb-2" />
+                                 <div className="font-bold text-blue-700">2. Question Images</div>
+                                 <div className="text-xs text-blue-600 mt-1">{bulkFiles.questions.length} files selected</div>
+                             </div>
+                         </div>
+                     )}
+
+                     {stagingRows.length === 0 ? (
+                         <button 
+                            onClick={generateStaging}
+                            disabled={bulkFiles.schemes.length === 0}
+                            className="w-full py-4 bg-indigo-600 text-white rounded-xl font-bold hover:bg-indigo-700 disabled:opacity-50 flex items-center justify-center gap-2"
+                         >
+                             <Wand2 className="w-5 h-5" /> Generate Staging Grid
+                         </button>
+                     ) : (
+                         <div className="flex gap-4 mb-4">
+                             <button onClick={analyzeAllStaging} disabled={isProcessingBulk} className="flex-1 py-3 bg-purple-600 text-white rounded-xl font-bold hover:bg-purple-700 flex items-center justify-center gap-2">
+                                 {isProcessingBulk ? <Loader2 className="animate-spin w-5 h-5"/> : <Brain className="w-5 h-5"/>} Auto-Analyze All Rows
+                             </button>
+                             <button onClick={commitBulk} disabled={isProcessingBulk} className="flex-1 py-3 bg-green-600 text-white rounded-xl font-bold hover:bg-green-700 flex items-center justify-center gap-2">
+                                 <Save className="w-5 h-5"/> Save All to Library
+                             </button>
+                             <button onClick={() => setStagingRows([])} className="px-4 py-3 bg-red-100 text-red-600 rounded-xl font-bold hover:bg-red-200">
+                                 Reset
+                             </button>
+                         </div>
+                     )}
+
+                     {stagingRows.length > 0 && (
+                         <div className="bg-white rounded-xl border shadow-sm overflow-hidden">
+                             <div className="grid grid-cols-12 bg-slate-100 p-3 text-xs font-bold text-slate-500 uppercase border-b">
+                                 <div className="col-span-1">ID</div>
+                                 <div className="col-span-4">Question Images</div>
+                                 <div className="col-span-2">Scheme</div>
+                                 <div className="col-span-2">Topic</div>
+                                 <div className="col-span-1">Marks</div>
+                                 <div className="col-span-1">Lines</div>
+                                 <div className="col-span-1">Action</div>
+                             </div>
+                             <div className="divide-y max-h-[400px] overflow-y-auto">
+                                 {stagingRows.map((row, idx) => (
+                                     <div key={idx} className="grid grid-cols-12 p-3 items-center hover:bg-slate-50">
+                                         <div className="col-span-1 font-bold text-slate-700">{row.id}</div>
+                                         <div className="col-span-4 flex gap-2 overflow-x-auto py-2">
+                                             {row.images.map((file, i) => (
+                                                 <div key={i} className="relative group min-w-[60px] w-16 h-16 border rounded bg-white shadow-sm flex flex-col items-center justify-center overflow-hidden" title={file.name}>
+                                                     <div className="text-[10px] text-slate-500 font-bold truncate w-full text-center px-1 mb-1">
+                                                        {file.name.length > 10 ? file.name.substring(0,8)+'...' : file.name}
+                                                     </div>
+                                                     <ImageIcon className="w-6 h-6 text-slate-300" />
+                                                     <button 
+                                                        onClick={() => removeStagingImage(idx, i)}
+                                                        className="absolute top-0.5 right-0.5 bg-red-500 text-white rounded-full p-0.5 opacity-0 group-hover:opacity-100 transition"
+                                                     >
+                                                        <X className="w-3 h-3" />
+                                                     </button>
+                                                 </div>
+                                             ))}
+                                             <label className="min-w-[60px] w-16 h-16 border-2 border-dashed border-gray-300 rounded flex flex-col items-center justify-center cursor-pointer hover:bg-gray-50 text-gray-400 hover:text-indigo-500">
+                                                 <Plus className="w-5 h-5" />
+                                                 <input type="file" accept="image/*" multiple onChange={(e) => addImageToRow(idx, e)} className="hidden" />
+                                             </label>
+                                         </div>
+                                         <div className="col-span-2 text-xs text-slate-600 truncate">{row.scheme.name}</div>
+                                         <div className="col-span-2">
+                                             <input value={row.topic} onChange={(e) => {
+                                                 const newRows = [...stagingRows];
+                                                 newRows[idx].topic = e.target.value;
+                                                 setStagingRows(newRows);
+                                             }} className="w-full p-1 border rounded text-xs" />
+                                         </div>
+                                         <div className="col-span-1">
+                                             <input type="number" value={row.marks} onChange={(e) => {
+                                                 const newRows = [...stagingRows];
+                                                 newRows[idx].marks = parseInt(e.target.value) || 0;
+                                                 setStagingRows(newRows);
+                                             }} className="w-full p-1 border rounded text-xs" />
+                                         </div>
+                                         <div className="col-span-1">
+                                              <input type="number" value={row.lines} onChange={(e) => {
+                                                 const newRows = [...stagingRows];
+                                                 newRows[idx].lines = parseInt(e.target.value) || 0;
+                                                 setStagingRows(newRows);
+                                             }} className="w-full p-1 border rounded text-xs" />
+                                         </div>
+                                         <div className="col-span-1 flex justify-center">
+                                             <button onClick={()=>autoAnalyzeRow(idx)} className="text-purple-500 hover:text-purple-700 p-1"><Brain className="w-4 h-4"/></button>
+                                         </div>
+                                     </div>
+                                 ))}
+                             </div>
+                         </div>
+                     )}
+                </div>
+            ) : (
+                <div className="flex-1 flex overflow-hidden">
+                    <div className="w-1/3 bg-slate-50 p-4 border-r overflow-y-auto space-y-4">
+                        {activeTab === 'questions' ? (
+                            <>
+                                <div className="grid grid-cols-2 gap-2">
                             <div>
                                 <label className="block text-xs font-bold text-slate-500 mb-1">Board</label>
-                                <select value={newQ.board} onChange={e=>setNewQ({...newQ,board:e.target.value})} className="w-full p-2 rounded border text-xs"><option value="AQA">AQA</option><option value="Edexcel">Edexcel</option><option value="OCR">OCR</option><option value="CIE">CIE</option></select>
+                                <select value={newQ.board} onChange={e=>setNewQ({...newQ,board:e.target.value})} className="w-full p-2 rounded border text-xs"><option value="AQA">AQA</option><option value="Edexcel">Edexcel</option></select>
                             </div>
                             <div>
                                 <label className="block text-xs font-bold text-slate-500 mb-1">Subject</label>
@@ -570,10 +895,10 @@ const TeacherStudio = ({ customQuestions, setCustomQuestions, paperResources, se
                         <div className="space-y-1"><label className="block text-xs font-bold text-slate-500 uppercase">Question Images</label><div className="grid grid-cols-3 gap-2">{newQ.questionImg.map((img, idx) => (<div key={idx} className="relative group border rounded-lg overflow-hidden bg-white shadow-sm h-20"><img src={getImageData(img)} className="w-full h-full object-cover" /><button onClick={() => removeImg(idx)} className="absolute top-1 right-1 bg-red-500 text-white rounded-full p-0.5 shadow-sm opacity-0 group-hover:opacity-100 transition hover:bg-red-600"><X className="w-3 h-3"/></button></div>))}<div className="relative border-2 border-dashed border-indigo-200 rounded-lg flex flex-col items-center justify-center h-20 hover:bg-indigo-50 transition cursor-pointer text-indigo-400"><input type="file" multiple onChange={handleImgs} className="absolute inset-0 opacity-0 cursor-pointer" />{loading ? <Loader2 className="w-6 h-6 animate-spin"/> : <Plus className="w-6 h-6 mb-1"/>}<span className="text-[9px] font-bold uppercase">{loading ? '...' : 'Add'}</span></div></div></div>
                         <div className="space-y-1"><label className="block text-xs font-bold text-slate-500 uppercase">Mark Scheme</label>{newQ.schemeImg ? (<div className="relative group border rounded-lg overflow-hidden bg-white shadow-sm h-20 w-24"><img src={getImageData(newQ.schemeImg)} className="w-full h-full object-cover" /><button onClick={() => removeScheme()} className="absolute top-1 right-1 bg-red-500 text-white rounded-full p-0.5 shadow-sm opacity-0 group-hover:opacity-100 transition hover:bg-red-600"><X className="w-3 h-3"/></button></div>) : (<div className="border-2 border-dashed border-gray-300 rounded-lg p-4 text-center hover:bg-white transition cursor-pointer relative h-20 flex flex-col items-center justify-center text-slate-400"><input type="file" onChange={handleScheme} className="absolute inset-0 opacity-0 cursor-pointer" /><CheckSquare className="w-6 h-6 mb-1" /><span className="text-xs">Upload Answer</span></div>)}</div>
                         <button onClick={addQ} className="w-full bg-indigo-600 text-white py-2 rounded font-bold hover:bg-indigo-700">Add Question</button>
-                    </>
-                ) : (
-                    <>
-                        <div className="text-xs text-slate-500 mb-2">Upload Resources</div>
+                            </>
+                        ) : (
+                            <>
+                                <div className="text-xs text-slate-500 mb-2">Upload Resources</div>
                         <div className="space-y-4">
                              <div><label className="block text-xs font-bold text-slate-500 uppercase mb-1">Type</label><select value={newRes.type} onChange={e=>setNewRes({...newRes,type:e.target.value})} className="w-full p-2 rounded border text-xs"><option value="scheme">Global Mark Scheme (PDF)</option><option value="supplementary">Supplementary (Formula Sheet)</option><option value="schema">Topic Classification Schema (CSV)</option></select></div>
                             {newRes.type !== 'schema' && (<div className="grid grid-cols-2 gap-2"><div><label className="block text-xs font-bold text-slate-500 uppercase mb-1">Board</label><select value={newRes.board} onChange={e=>setNewRes({...newRes,board:e.target.value})} className="w-full p-2 rounded border text-xs"><option value="AQA">AQA</option><option value="Edexcel">Edexcel</option><option value="OCR">OCR</option><option value="CIE">CIE</option></select></div><div><label className="block text-xs font-bold text-slate-500 mb-1">Subject</label><select value={newRes.subject} onChange={e=>setNewRes({...newRes,subject:e.target.value})} className="w-full p-2 rounded border text-xs"><option value="PHYSICS">Physics</option><option value="CHEMISTRY">Chemistry</option></select></div></div>)}
@@ -581,22 +906,22 @@ const TeacherStudio = ({ customQuestions, setCustomQuestions, paperResources, se
                         </div>
                         <div className="border-2 border-dashed rounded p-8 text-center relative cursor-pointer hover:bg-white mt-4"><input type="file" onChange={handleResUpload} className="absolute inset-0 opacity-0"/>{newRes.file ? <div className="flex flex-col items-center"><FileText className="w-8 h-8 text-green-600 mb-2" /><div className="text-xs text-green-600 font-bold">{newRes.fileName}</div></div> : <div className="text-slate-400 flex flex-col items-center">{newRes.type === 'schema' ? <FileSpreadsheet className="w-8 h-8 mb-2"/> : <Upload className="w-8 h-8 mb-2" />}<span className="text-xs">Upload {newRes.type === 'schema' ? '.csv file' : 'PDF'}</span></div>}</div>
                         <button onClick={newRes.type === 'schema' ? undefined : addRes} className="w-full bg-indigo-600 text-white py-2 rounded font-bold hover:bg-indigo-700 mt-2">{newRes.type === 'schema' ? 'Schema Loaded Automatically' : 'Save Resource'}</button>
-                    </>
-                )}
-            </div>
-            <div className="flex-1 bg-white p-6 flex flex-col">
-                <div className="flex justify-between mb-4">
-                    <h3 className="font-bold">Library ({customQuestions.length})</h3>
-                    <div className="flex gap-2">
-                        <button onClick={classifyAllQuestions} disabled={bulkProcessing || customQuestions.length === 0} className="bg-indigo-100 hover:bg-indigo-200 text-indigo-700 px-3 py-1 rounded text-xs font-bold flex items-center gap-1 transition">{bulkProcessing ? <Loader2 className="w-3 h-3 animate-spin"/> : <Brain className="w-3 h-3"/>} Refine All Topics</button>
-                        <label className="cursor-pointer bg-slate-100 px-3 py-1 rounded text-xs font-bold flex items-center gap-1"><Upload className="w-3 h-3"/> Import <input type="file" onChange={importDB} className="hidden"/></label>
-                        <button onClick={exportDB} className="bg-indigo-50 text-indigo-700 px-3 py-1 rounded text-xs font-bold flex items-center gap-1"><Download className="w-3 h-3"/> Export</button>
+                            </>
+                        )}
                     </div>
-                </div>
-                <div className="flex gap-2 mb-4 p-2 bg-slate-50 rounded-lg border border-slate-100"><div className="flex items-center gap-2 flex-1"><Filter className="w-3 h-3 text-slate-400" /><select value={libFilter.subject} onChange={e => setLibFilter({...libFilter, subject: e.target.value})} className="bg-transparent text-xs font-bold text-slate-600 focus:outline-none"><option value="ALL">All Subjects</option><option value="PHYSICS">Physics</option><option value="CHEMISTRY">Chemistry</option></select></div><div className="w-px bg-slate-200"></div><select value={libFilter.year} onChange={e => setLibFilter({...libFilter, year: e.target.value})} className="bg-transparent text-xs font-bold text-slate-600 focus:outline-none"><option value="ALL">All Years</option>{[2018, 2019, 2020, 2021, 2022, 2023, 2024, 2025].map(y => <option key={y} value={y}>{y}</option>)}</select><div className="w-px bg-slate-200"></div><select value={libFilter.paper} onChange={e => setLibFilter({...libFilter, paper: e.target.value})} className="bg-transparent text-xs font-bold text-slate-600 focus:outline-none"><option value="ALL">All Papers</option><option value="P1">Paper 1</option><option value="P2">Paper 2</option></select></div>
-                <div className="flex-1 overflow-y-auto space-y-2">
-                    {/* Paper Resources & Schemas */}
-                    {Object.entries(paperResources).map(([key, res]) => (
+                    <div className="flex-1 bg-white p-6 flex flex-col">
+                        <div className="flex justify-between mb-4">
+                            <h3 className="font-bold">Library ({customQuestions.length})</h3>
+                            <div className="flex gap-2">
+                                <button onClick={classifyAllQuestions} disabled={bulkProcessing || customQuestions.length === 0} className="bg-indigo-100 hover:bg-indigo-200 text-indigo-700 px-3 py-1 rounded text-xs font-bold flex items-center gap-1 transition">{bulkProcessing ? <Loader2 className="w-3 h-3 animate-spin"/> : <Brain className="w-3 h-3"/>} Refine All Topics</button>
+                                <label className="cursor-pointer bg-slate-100 px-3 py-1 rounded text-xs font-bold flex items-center gap-1"><Upload className="w-3 h-3"/> Import <input type="file" onChange={importDB} className="hidden"/></label>
+                                <button onClick={exportDB} className="bg-indigo-50 text-indigo-700 px-3 py-1 rounded text-xs font-bold flex items-center gap-1"><Download className="w-3 h-3"/> Export</button>
+                            </div>
+                        </div>
+                        <div className="flex gap-2 mb-4 p-2 bg-slate-50 rounded-lg border border-slate-100"><div className="flex items-center gap-2 flex-1"><Filter className="w-3 h-3 text-slate-400" /><select value={libFilter.subject} onChange={e => setLibFilter({...libFilter, subject: e.target.value})} className="bg-transparent text-xs font-bold text-slate-600 focus:outline-none"><option value="ALL">All Subjects</option><option value="PHYSICS">Physics</option><option value="CHEMISTRY">Chemistry</option></select></div><div className="w-px bg-slate-200"></div><select value={libFilter.year} onChange={e => setLibFilter({...libFilter, year: e.target.value})} className="bg-transparent text-xs font-bold text-slate-600 focus:outline-none"><option value="ALL">All Years</option>{[2018, 2019, 2020, 2021, 2022, 2023, 2024, 2025].map(y => <option key={y} value={y}>{y}</option>)}</select><div className="w-px bg-slate-200"></div><select value={libFilter.paper} onChange={e => setLibFilter({...libFilter, paper: e.target.value})} className="bg-transparent text-xs font-bold text-slate-600 focus:outline-none"><option value="ALL">All Papers</option><option value="P1">Paper 1</option><option value="P2">Paper 2</option></select></div>
+                        <div className="flex-1 overflow-y-auto space-y-2">
+                             {/* ... [Existing Library List] ... */}
+                             {Object.entries(paperResources).map(([key, res]) => (
                         <div key={key} className={`p-3 rounded-lg border flex gap-4 items-center ${res.type === 'schema' ? 'bg-purple-50 border-purple-200' : 'bg-amber-50 border-amber-200'}`}>
                             <div className={`w-10 h-10 rounded flex items-center justify-center ${res.type === 'schema' ? 'bg-purple-100 text-purple-600' : 'bg-amber-100 text-amber-600'}`}>
                                 {res.type === 'schema' ? <FileSpreadsheet className="w-6 h-6" /> : <FileText className="w-6 h-6" />}
@@ -621,8 +946,10 @@ const TeacherStudio = ({ customQuestions, setCustomQuestions, paperResources, se
                             <button onClick={()=>setCustomQuestions(p=>p.filter(item=>item.id!==q.id))} className="text-red-400 hover:text-red-600"><Trash2 className="w-4 h-4"/></button>
                         </div>
                     ))}
+                        </div>
+                    </div>
                 </div>
-            </div>
+            )}
         </div>
       </div>
     </div>
@@ -657,9 +984,14 @@ const ExamMode = ({ examData, paperResources, onExit, onComplete, bookmarks, onT
   }, [idx]); // Only reset answer when question index changes
 
   useEffect(() => {
-      setShowNoteInput(false);
-      setNoteText(bookmarkNotes[q.id] || "");
-  }, [idx, q.id]); // Update note when question changes
+      if (q) { // Check if q exists
+          setShowNoteInput(false);
+          setNoteText(bookmarkNotes[q.id] || "");
+      }
+  }, [idx, q?.id]); // Update note when question changes
+
+  // Safeguard: if question data is missing, don't render
+  if (!q) return null;
 
   const handleBookmarkClick = () => {
       if (isBookmarked) {
@@ -688,7 +1020,7 @@ const ExamMode = ({ examData, paperResources, onExit, onComplete, bookmarks, onT
     if (q.type === 'image') {
       setMarking(true);
       try {
-        const fb = await evaluateAnswerWithGemini(q.questionImg, q.schemeImg, globalRes?.file, txt, q.marks);
+        const fb = await evaluateAnswerWithGemini(q.questionImg, q.schemeImg, globalRes?.file, txt, q.marks, q.questionText, q.schemeText);
         // Initialize marksAwarded to null to indicate "not yet self-verified"
         setAnswers(p => ({ ...p, [idx]: { val: txt, feedback: fb, marksAwarded: null, isCorrect: null } }));
         setShowExp(true);
@@ -896,6 +1228,18 @@ const Dashboard = ({ onSelectExam, onOpenStudio, customDB = [], paperResources, 
   const [tab, setTab] = useState('papers'); // 'papers', 'topics', 'bookmarks'
   const [subject, setSubject] = useState(null);
   const [viewingQ, setViewingQ] = useState(null); // For Full Question Viewer Modal
+  const [showAdminLogin, setShowAdminLogin] = useState(false);
+  const [adminPass, setAdminPass] = useState("");
+
+  const handleAdminAccess = () => {
+    if (adminPass === "1234") {
+        onOpenStudio();
+        setShowAdminLogin(false);
+        setAdminPass("");
+    } else {
+        alert("Incorrect password");
+    }
+  };
 
   // Extract unique topics from DB for a subject
   const getTopics = (subjCode) => {
@@ -1157,9 +1501,33 @@ const Dashboard = ({ onSelectExam, onOpenStudio, customDB = [], paperResources, 
                 </button>
             ))}
         </div>
-        <button onClick={onOpenStudio} className="mt-12 flex items-center gap-2 bg-slate-900 text-white px-6 py-3 rounded-full font-bold hover:bg-slate-700 transition shadow-lg">
-            <PenTool className="w-4 h-4"/> Teacher Studio
+        
+        {/* Admin Access UI */}
+        <button 
+            onClick={() => setShowAdminLogin(true)} 
+            className="mt-12 flex items-center gap-2 bg-slate-200 text-slate-600 px-4 py-2 rounded-full font-bold hover:bg-slate-300 transition text-xs"
+        >
+            <Lock className="w-3 h-3"/> Admin Access
         </button>
+
+        {showAdminLogin && (
+            <div className="fixed inset-0 bg-slate-900/50 flex items-center justify-center z-50">
+                <div className="bg-white p-6 rounded-xl shadow-xl w-80">
+                    <h3 className="font-bold text-lg mb-4">Enter Password</h3>
+                    <input 
+                        type="password" 
+                        value={adminPass} 
+                        onChange={(e) => setAdminPass(e.target.value)} 
+                        className="w-full border p-2 rounded mb-4" 
+                        placeholder="Admin Code"
+                    />
+                    <div className="flex gap-2">
+                        <button onClick={() => setShowAdminLogin(false)} className="flex-1 bg-slate-100 py-2 rounded">Cancel</button>
+                        <button onClick={handleAdminAccess} className="flex-1 bg-indigo-600 text-white py-2 rounded">Unlock</button>
+                    </div>
+                </div>
+            </div>
+        )}
     </div>
   );
 };
@@ -1175,30 +1543,66 @@ const App = () => {
   const [bookmarks, setBookmarks] = useState([]); // Array of IDs
   const [bookmarkNotes, setBookmarkNotes] = useState({}); // { id: "note string" }
 
-  // 1. LOAD FROM LOCAL STORAGE ON MOUNT
+  // 1. LOAD FROM INDEXEDDB ON MOUNT
   useEffect(() => {
-    const savedDB = localStorage.getItem('medly_customDB');
-    const savedRes = localStorage.getItem('medly_resDB');
-    const savedSchema = localStorage.getItem('medly_topicSchema');
-    const savedStats = localStorage.getItem('medly_userStats');
-    const savedBookmarks = localStorage.getItem('medly_bookmarks');
-    const savedNotes = localStorage.getItem('medly_bookmarkNotes');
+    const loadData = async () => {
+        try {
+            const savedDB = await idb.get('customQuestions');
+            const savedRes = await idb.get('paperResources');
+            const savedSchema = await idb.get('topicSchema');
+            const savedStats = await idb.get('userStats');
+            const savedBookmarks = await idb.get('bookmarks');
+            const savedNotes = await idb.get('bookmarkNotes');
 
-    if (savedDB) setCustomDB(JSON.parse(savedDB));
-    if (savedRes) setResDB(JSON.parse(savedRes));
-    if (savedSchema) setTopicSchema(JSON.parse(savedSchema));
-    if (savedStats) setUserStats(JSON.parse(savedStats));
-    if (savedBookmarks) setBookmarks(JSON.parse(savedBookmarks));
-    if (savedNotes) setBookmarkNotes(JSON.parse(savedNotes));
+            // --- RESOURCE KIT LOADER LOGIC ---
+            // If database is empty, try to fetch the default Resource Kit
+            if (!savedDB || savedDB.length === 0) {
+                console.log("Database empty. Attempting to load Resource Kit...");
+                try {
+                    // This expects a file named 'resource-kit.json' in your public/ root folder
+                    const response = await fetch('/resource-kit.json');
+                    if (response.ok) {
+                        const kit = await response.json();
+                        
+                        if (kit.questions) {
+                            setCustomDB(kit.questions);
+                            idb.set('customQuestions', kit.questions); // Save immediately
+                        }
+                        if (kit.resources) {
+                            setResDB(kit.resources);
+                            idb.set('paperResources', kit.resources);
+                        }
+                        if (kit.schema) {
+                            setTopicSchema(kit.schema);
+                            idb.set('topicSchema', kit.schema);
+                        }
+                        console.log("Resource Kit Loaded Successfully");
+                        return; // Exit to avoid overwriting with nulls below
+                    }
+                } catch (e) {
+                    console.log("No Resource Kit found, starting fresh.");
+                }
+            }
+            // ---------------------------------
+
+            if (savedDB) setCustomDB(savedDB);
+            if (savedRes) setResDB(savedRes);
+            if (savedSchema) setTopicSchema(savedSchema);
+            if (savedStats) setUserStats(savedStats);
+            if (savedBookmarks) setBookmarks(savedBookmarks);
+            if (savedNotes) setBookmarkNotes(savedNotes);
+        } catch (e) { console.error("IDB Load Error", e); }
+    };
+    loadData();
   }, []);
 
-  // 2. SAVE TO LOCAL STORAGE WHENEVER STATE CHANGES
-  useEffect(() => { try { localStorage.setItem('medly_customDB', JSON.stringify(customDB)); } catch (e) { console.warn("Quota exceeded"); } }, [customDB]);
-  useEffect(() => { try { localStorage.setItem('medly_resDB', JSON.stringify(resDB)); } catch (e) { console.warn("Quota exceeded"); } }, [resDB]);
-  useEffect(() => { localStorage.setItem('medly_topicSchema', JSON.stringify(topicSchema)); }, [topicSchema]);
-  useEffect(() => { localStorage.setItem('medly_userStats', JSON.stringify(userStats)); }, [userStats]);
-  useEffect(() => { localStorage.setItem('medly_bookmarks', JSON.stringify(bookmarks)); }, [bookmarks]);
-  useEffect(() => { localStorage.setItem('medly_bookmarkNotes', JSON.stringify(bookmarkNotes)); }, [bookmarkNotes]);
+  // 2. SAVE TO INDEXEDDB WHENEVER STATE CHANGES
+  useEffect(() => { idb.set('customQuestions', customDB); }, [customDB]);
+  useEffect(() => { idb.set('paperResources', resDB); }, [resDB]);
+  useEffect(() => { idb.set('topicSchema', topicSchema); }, [topicSchema]);
+  useEffect(() => { idb.set('userStats', userStats); }, [userStats]);
+  useEffect(() => { idb.set('bookmarks', bookmarks); }, [bookmarks]);
+  useEffect(() => { idb.set('bookmarkNotes', bookmarkNotes); }, [bookmarkNotes]);
 
   const toggleBookmark = (id) => {
       setBookmarks(prev => prev.includes(id) ? prev.filter(b => b !== id) : [...prev, id]);
