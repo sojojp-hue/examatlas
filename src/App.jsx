@@ -128,7 +128,7 @@ const getImageData = (img) => {
 };
 
 const chatWithAtlas = async (questionImg, schemeImg, userQuery) => {
-  const apiKey = ""; 
+  const apiKey = import.meta.env.VITE_GEMINI_API_KEY || "";
   const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${apiKey}`;
 
   const prompt = `
@@ -160,7 +160,7 @@ const chatWithAtlas = async (questionImg, schemeImg, userQuery) => {
 };
 
 const detectTopicFromImage = async (questionImg, board, subject, paper, topicSchema) => {
-  const apiKey = ""; 
+  const apiKey = import.meta.env.VITE_GEMINI_API_KEY || "";
   const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${apiKey}`;
 
   const schemaKey = `${board.toUpperCase()}-${subject.toUpperCase()}-${paper.toUpperCase()}`;
@@ -189,7 +189,7 @@ const detectTopicFromImage = async (questionImg, board, subject, paper, topicSch
 };
 
 const detectMarksFromImage = async (questionImg) => {
-  const apiKey = "";
+  const apiKey = import.meta.env.VITE_GEMINI_API_KEY || "";
   const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${apiKey}`;
   const prompt = `Find the max marks. Return ONLY the integer.`;
   const parts = [{ text: prompt }];
@@ -208,7 +208,7 @@ const detectMarksFromImage = async (questionImg) => {
 };
 
 const detectLinesFromImage = async (questionImg) => {
-  const apiKey = "";
+  const apiKey = import.meta.env.VITE_GEMINI_API_KEY || "";
   const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${apiKey}`;
   const prompt = `Count horizontal answer lines. Return ONLY integer. If none, return 0.`;
   const parts = [{ text: prompt }];
@@ -228,7 +228,7 @@ const detectLinesFromImage = async (questionImg) => {
 };
 
 const evaluateAnswerWithGemini = async (questionImg, schemeImg, globalSchemePdf, userAnswer, marks, questionText, schemeText) => {
-  const apiKey = "";
+  const apiKey = import.meta.env.VITE_GEMINI_API_KEY || "";
   const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${apiKey}`;
 
   let prompt = `
@@ -281,7 +281,7 @@ const evaluateAnswerWithGemini = async (questionImg, schemeImg, globalSchemePdf,
 };
 
 const analyzeQuestionData = async (questionImg, schemeImg, board, subject, paper, topicSchema) => {
-  const apiKey = ""; 
+  const apiKey = import.meta.env.VITE_GEMINI_API_KEY || "";
   const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${apiKey}`;
 
   const schemaKey = `${board.toUpperCase()}-${subject.toUpperCase()}-${paper.toUpperCase()}`;
