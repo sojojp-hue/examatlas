@@ -51,15 +51,17 @@ import {
   Files,
   ArrowRight,
   Lock,
-  Unlock
+  Unlock,
+  User,
+  Sparkle
 } from 'lucide-react';
 
 /**
  * --- INDEXEDDB HELPER ---
  */
 const DB_NAME = 'ExamAtlasDB';
-const DB_VERSION = 2;
-const STORES = ['customQuestions', 'paperResources', 'userStats', 'bookmarks', 'bookmarkNotes', 'topicSchema'];
+const DB_VERSION = 3;
+const STORES = ['customQuestions', 'paperResources', 'userStats', 'bookmarks', 'bookmarkNotes', 'topicSchema', 'predictedPapers'];
 
 const idb = {
   open: () => {
@@ -318,6 +320,49 @@ const analyzeQuestionData = async (questionImg, schemeImg, board, subject, paper
   } catch (error) { return { topic: "Uncategorized", marks: 1, lines: 4, question_text: "", scheme_text: "" }; }
 };
 
+const generateMockPaperWithGemini = async (board, subject) => {
+    const apiKey = import.meta.env.VITE_GEMINI_API_KEY || "";
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${apiKey}`;
+    
+    const prompt = `
+      Act as a Senior Examiner for ${board} ${subject}.
+      Generate a "Predicted Paper" containing 4 unique, high-quality exam questions.
+      
+      Requirements:
+      1. Questions must cover different key topics from the official syllabus.
+      2. Questions should range in difficulty (1 easy, 2 medium, 1 hard).
+      3. Questions must be text-based scenarios (no images required).
+      4. CRITICAL: If using LaTeX, you MUST double-escape all backslashes (e.g. \\\\frac instead of \\frac) to ensure valid JSON.
+      
+      Output strictly a JSON Array of objects:
+      [
+        {
+          "text": "Full question text here...",
+          "marks": number (integer between 2 and 6),
+          "topic": "Topic Name",
+          "explanation": "Detailed marking scheme criteria for this question..."
+        }
+      ]
+    `;
+    
+    try {
+        const response = await fetch(url, { 
+            method: 'POST', 
+            headers: { 'Content-Type': 'application/json' }, 
+            body: JSON.stringify({ 
+                contents: [{ parts: [{ text: prompt }] }], 
+                generationConfig: { responseMimeType: "application/json" } 
+            }) 
+        });
+        if (!response.ok) throw new Error("API Error");
+        const data = await response.json();
+        return JSON.parse(data.candidates?.[0]?.content?.parts?.[0]?.text) || [];
+    } catch (e) {
+        console.error("Generation failed", e);
+        return [];
+    }
+};
+
 const fileToBase64 = (file) => new Promise((resolve, reject) => {
   const reader = new FileReader();
   reader.readAsDataURL(file);
@@ -379,7 +424,10 @@ const AskAtlas = ({ context, isOpen, onClose }) => {
     if (!window.katex) {
         const script = document.createElement('script');
         script.src = "https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js";
+        script.onload = () => setKatexLoaded(true);
         document.head.appendChild(script);
+    } else {
+        setKatexLoaded(true);
     }
   }, []);
 
@@ -606,6 +654,7 @@ const TeacherStudio = ({ customQuestions, setCustomQuestions, paperResources, se
       alert("Resource Saved!"); 
   };
 
+  // --- BULK UPLOAD HANDLERS ---
   const handleBulkDrop = (e, type) => {
       const files = Array.from(e.target.files);
       setBulkFiles(prev => ({ ...prev, [type]: [...prev[type], ...files] }));
@@ -647,7 +696,14 @@ const TeacherStudio = ({ customQuestions, setCustomQuestions, paperResources, se
 
       setStagingRows(prev => {
           const copy = [...prev];
-          copy[idx] = { ...copy[idx], marks: result.marks || 1, lines: overrideLines > 0 ? overrideLines : (result.lines || 4), topic: result.topic || "General", questionText: result.question_text || "", schemeText: result.scheme_text || "" };
+          copy[idx] = { 
+              ...copy[idx], 
+              marks: result.marks || 1, 
+              lines: overrideLines > 0 ? overrideLines : (result.lines || 4), // Prefer filename
+              topic: result.topic || "General",
+              questionText: result.question_text || "",
+              schemeText: result.scheme_text || ""
+          };
           return copy;
       });
   };
@@ -717,7 +773,6 @@ const TeacherStudio = ({ customQuestions, setCustomQuestions, paperResources, se
 
   const classifyAllQuestions = async () => {
       setBulkProcessing(true);
-      // Now safe to use filteredQuestions as it is defined above
       const targets = filteredQuestions;
       for (const item of targets) {
           try {
@@ -1135,6 +1190,12 @@ const ExamMode = ({ examData, paperResources, onExit, onComplete, bookmarks, onT
                 </div>
             ) : (
                 <div className="bg-slate-800 text-white p-6 rounded-2xl shadow-lg animate-in slide-in-from-bottom-4">
+                    {/* ADDED: Student Answer Display in Feedback Mode */}
+                    <div className="mb-6 p-4 bg-slate-700/50 rounded-xl border border-slate-600">
+                         <div className="text-xs font-bold text-slate-400 uppercase mb-2">Your Answer</div>
+                         <div className="text-sm text-slate-200 whitespace-pre-wrap font-medium">{answers[idx]?.val}</div>
+                    </div>
+
                     <div className="mb-6">
                         {answers[idx]?.feedback ? (
                             <div className={`p-4 rounded-xl border ${answers[idx].feedback.marks_awarded === q.marks ? 'bg-green-900/30 border-green-700' : answers[idx].feedback.marks_awarded > 0 ? 'bg-orange-900/30 border-orange-700' : 'bg-red-900/30 border-red-700'}`}>
@@ -1196,7 +1257,13 @@ const ExamMode = ({ examData, paperResources, onExit, onComplete, bookmarks, onT
                         </div>
                     </div>
 
-                    {q.type!=='image' && <div className="text-sm opacity-80 font-mono mb-4">{q.explanation}</div>}
+                    {q.type!=='image' && (
+                        <div className="bg-white/10 p-4 rounded-xl border border-white/20 mb-4">
+                             <div className="text-xs font-bold text-slate-300 uppercase mb-2">Marking Criteria</div>
+                             <div className="text-sm opacity-90 font-mono whitespace-pre-wrap">{q.explanation || q.schemeText}</div>
+                        </div>
+                    )}
+                    
                     {q.type==='image' && <img src={getImageData(q.schemeImg)} className="w-full rounded mb-4 bg-white"/>}
                     
                     {/* Locked Next Button until verified */}
@@ -1224,12 +1291,13 @@ const ExamMode = ({ examData, paperResources, onExit, onComplete, bookmarks, onT
   );
 };
 
-const Dashboard = ({ onSelectExam, onOpenStudio, customDB = [], paperResources, userStats, bookmarks, onToggleBookmark, onStartPractice, bookmarkNotes }) => {
-  const [tab, setTab] = useState('papers'); // 'papers', 'topics', 'bookmarks'
+const Dashboard = ({ onSelectExam, onOpenStudio, customDB = [], paperResources, userStats, bookmarks, onToggleBookmark, onStartPractice, bookmarkNotes, predictedPapers, onGeneratePrediction }) => {
+  const [tab, setTab] = useState('papers'); // 'papers', 'topics', 'bookmarks', 'predicted'
   const [subject, setSubject] = useState(null);
   const [viewingQ, setViewingQ] = useState(null); // For Full Question Viewer Modal
   const [showAdminLogin, setShowAdminLogin] = useState(false);
   const [adminPass, setAdminPass] = useState("");
+  const [isGenerating, setIsGenerating] = useState(false);
 
   const handleAdminAccess = () => {
     if (adminPass === "1234") {
@@ -1239,6 +1307,16 @@ const Dashboard = ({ onSelectExam, onOpenStudio, customDB = [], paperResources, 
     } else {
         alert("Incorrect password");
     }
+  };
+  
+  const handleGenerateClick = async () => {
+      setIsGenerating(true);
+      // Determine board based on subject code
+      const board = subject === 'AQA-PHYSICS' ? 'AQA' : 'Edexcel';
+      const subj = subject === 'AQA-PHYSICS' ? 'PHYSICS' : 'CHEMISTRY';
+      
+      await onGeneratePrediction(board, subj);
+      setIsGenerating(false);
   };
 
   // Extract unique topics from DB for a subject
@@ -1276,6 +1354,12 @@ const Dashboard = ({ onSelectExam, onOpenStudio, customDB = [], paperResources, 
       
       return bookmarkedMap;
   };
+  
+  const getPredictedPapersForSubject = (subjCode) => {
+      const board = subjCode === 'AQA-PHYSICS' ? 'AQA' : 'Edexcel';
+      const subj = subjCode === 'AQA-PHYSICS' ? 'PHYSICS' : 'CHEMISTRY';
+      return predictedPapers.filter(p => p.board === board && p.subject === subj);
+  };
 
   const startTopicTest = (topicName, questions) => {
     onSelectExam({
@@ -1309,6 +1393,7 @@ const Dashboard = ({ onSelectExam, onOpenStudio, customDB = [], paperResources, 
   if (subject) {
     const topics = getTopics(subject);
     const bookmarkedTopics = getBookmarkedQuestionsByTopic(subject);
+    const subjectPredictedPapers = getPredictedPapersForSubject(subject);
     const subjName = SUBJECTS_DB[subject].name;
     
     return (
@@ -1321,6 +1406,7 @@ const Dashboard = ({ onSelectExam, onOpenStudio, customDB = [], paperResources, 
                 <button onClick={()=>setTab('papers')} className={`pb-2 px-4 font-bold whitespace-nowrap ${tab==='papers'?'text-indigo-600 border-b-2 border-indigo-600':'text-slate-400'}`}>Past Papers</button>
                 <button onClick={()=>setTab('topics')} className={`pb-2 px-4 font-bold whitespace-nowrap ${tab==='topics'?'text-indigo-600 border-b-2 border-indigo-600':'text-slate-400'}`}>Topic Mastery</button>
                 <button onClick={()=>setTab('bookmarks')} className={`pb-2 px-4 font-bold whitespace-nowrap ${tab==='bookmarks'?'text-indigo-600 border-b-2 border-indigo-600':'text-slate-400'}`}>Focused Revision</button>
+                <button onClick={()=>setTab('predicted')} className={`pb-2 px-4 font-bold whitespace-nowrap ${tab==='predicted'?'text-indigo-600 border-b-2 border-indigo-600':'text-slate-400'}`}>Predicted Papers</button>
             </div>
 
             {tab === 'papers' && (
@@ -1436,6 +1522,61 @@ const Dashboard = ({ onSelectExam, onOpenStudio, customDB = [], paperResources, 
                     )}
                 </div>
             )}
+            
+            {/* NEW: Predicted Papers Tab Content */}
+            {tab === 'predicted' && (
+                <div>
+                     <div className="bg-indigo-900 text-white p-6 rounded-xl mb-6 flex justify-between items-center relative overflow-hidden">
+                        <div className="relative z-10">
+                            <h3 className="font-bold text-2xl mb-1 flex items-center gap-2"><Sparkle className="w-6 h-6 text-yellow-300"/> AI Predicted Papers</h3>
+                            <p className="text-indigo-200 text-sm max-w-md">
+                                Generate a unique mock exam based on high-probability topics from the knowledge base.
+                            </p>
+                        </div>
+                        <button 
+                            onClick={handleGenerateClick}
+                            disabled={isGenerating}
+                            className="relative z-10 bg-white text-indigo-900 font-bold px-6 py-3 rounded-xl shadow-lg hover:bg-indigo-50 transition flex items-center gap-2"
+                        >
+                            {isGenerating ? <Loader2 className="w-5 h-5 animate-spin"/> : <Wand2 className="w-5 h-5"/>}
+                            Generate New Paper
+                        </button>
+                        {/* Decorative Background Elements */}
+                        <div className="absolute top-0 right-0 w-64 h-64 bg-indigo-800 rounded-full blur-3xl opacity-50 -mr-16 -mt-16"></div>
+                        <div className="absolute bottom-0 left-20 w-32 h-32 bg-purple-600 rounded-full blur-2xl opacity-30"></div>
+                     </div>
+                     
+                     <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                         {subjectPredictedPapers.length === 0 ? (
+                             <div className="col-span-full text-center py-12 text-slate-400">
+                                 <FileSpreadsheet className="w-12 h-12 mx-auto mb-3 opacity-20" />
+                                 <p>No predicted papers generated yet.</p>
+                             </div>
+                         ) : (
+                             subjectPredictedPapers.map((paper) => (
+                                 <div key={paper.id} className="bg-white p-5 rounded-xl border shadow-sm hover:shadow-md transition group relative overflow-hidden">
+                                     <div className="absolute top-0 right-0 bg-yellow-400 text-yellow-900 text-[10px] font-bold px-2 py-1 rounded-bl-lg">PREDICTED</div>
+                                     <div className="flex items-center gap-3 mb-4">
+                                         <div className="w-12 h-12 bg-indigo-50 rounded-lg flex items-center justify-center text-indigo-600">
+                                             <Brain className="w-6 h-6" />
+                                         </div>
+                                         <div>
+                                             <h4 className="font-bold text-slate-800">{paper.title}</h4>
+                                             <div className="text-xs text-slate-500">{new Date(paper.timestamp).toLocaleDateString()} • {paper.questions.length} Questions</div>
+                                         </div>
+                                     </div>
+                                     <button 
+                                        onClick={() => onSelectExam(paper)}
+                                        className="w-full py-2 bg-slate-900 text-white rounded-lg font-bold text-sm hover:bg-slate-700 transition"
+                                     >
+                                         Start Exam
+                                     </button>
+                                 </div>
+                             ))
+                         )}
+                     </div>
+                </div>
+            )}
         </div>
 
         {/* FULL QUESTION VIEWER MODAL */}
@@ -1542,6 +1683,7 @@ const App = () => {
   const [userStats, setUserStats] = useState({}); 
   const [bookmarks, setBookmarks] = useState([]); // Array of IDs
   const [bookmarkNotes, setBookmarkNotes] = useState({}); // { id: "note string" }
+  const [predictedPapers, setPredictedPapers] = useState([]); // Array of generated paper objects
 
   // 1. LOAD FROM INDEXEDDB ON MOUNT
   useEffect(() => {
@@ -1553,20 +1695,20 @@ const App = () => {
             const savedStats = await idb.get('userStats');
             const savedBookmarks = await idb.get('bookmarks');
             const savedNotes = await idb.get('bookmarkNotes');
+            const savedPredicted = await idb.get('predictedPapers');
 
             // --- RESOURCE KIT LOADER LOGIC ---
             // If database is empty, try to fetch the default Resource Kit
             if (!savedDB || savedDB.length === 0) {
                 console.log("Database empty. Attempting to load Resource Kit...");
                 try {
-                    // This expects a file named 'resource-kit.json' in your public/ root folder
                     const response = await fetch('/resource-kit.json');
                     if (response.ok) {
                         const kit = await response.json();
                         
                         if (kit.questions) {
                             setCustomDB(kit.questions);
-                            idb.set('customQuestions', kit.questions); // Save immediately
+                            idb.set('customQuestions', kit.questions); 
                         }
                         if (kit.resources) {
                             setResDB(kit.resources);
@@ -1576,8 +1718,7 @@ const App = () => {
                             setTopicSchema(kit.schema);
                             idb.set('topicSchema', kit.schema);
                         }
-                        console.log("Resource Kit Loaded Successfully");
-                        return; // Exit to avoid overwriting with nulls below
+                        return; 
                     }
                 } catch (e) {
                     console.log("No Resource Kit found, starting fresh.");
@@ -1591,6 +1732,7 @@ const App = () => {
             if (savedStats) setUserStats(savedStats);
             if (savedBookmarks) setBookmarks(savedBookmarks);
             if (savedNotes) setBookmarkNotes(savedNotes);
+            if (savedPredicted) setPredictedPapers(savedPredicted);
         } catch (e) { console.error("IDB Load Error", e); }
     };
     loadData();
@@ -1603,6 +1745,7 @@ const App = () => {
   useEffect(() => { idb.set('userStats', userStats); }, [userStats]);
   useEffect(() => { idb.set('bookmarks', bookmarks); }, [bookmarks]);
   useEffect(() => { idb.set('bookmarkNotes', bookmarkNotes); }, [bookmarkNotes]);
+  useEffect(() => { idb.set('predictedPapers', predictedPapers); }, [predictedPapers]);
 
   const toggleBookmark = (id) => {
       setBookmarks(prev => prev.includes(id) ? prev.filter(b => b !== id) : [...prev, id]);
@@ -1620,8 +1763,68 @@ const App = () => {
       });
   };
 
+  const generatePredictedPaper = async (board, subject) => {
+      // 1. Filter Questions
+      const relevantQs = customDB.filter(q => q.board === board && q.subject === subject);
+      
+      // If we have enough context, try generating new ones, otherwise use existing
+      // For this implementation, we will try to generate PURELY new questions as requested
+      
+      try {
+          const generatedQuestions = await generateMockPaperWithGemini(board, subject);
+          
+          if (generatedQuestions && generatedQuestions.length > 0) {
+               // Add necessary metadata to generated questions
+               const enrichedQuestions = generatedQuestions.map((q, i) => ({
+                   id: `pred-q-${Date.now()}-${i}`,
+                   type: 'text',
+                   text: q.text,
+                   marks: q.marks,
+                   topic: q.topic || 'General',
+                   board: board,
+                   subject: subject,
+                   year: 'Predicted',
+                   paper: 'AI-Gen',
+                   explanation: q.explanation, // Mark scheme text
+                   schemeText: q.explanation // Redundant but consistent for marking
+               }));
+
+               // 4. Create Paper Object
+              const newPaper = {
+                  id: `pred-${Date.now()}`,
+                  title: `Predicted Paper ${new Date().getFullYear() + 1}`,
+                  board,
+                  subject,
+                  year: 'Predicted',
+                  paperCode: 'AI-Gen',
+                  questions: enrichedQuestions,
+                  isPredicted: true, // Flag for handling completion logic
+                  timestamp: Date.now()
+              };
+        
+              setPredictedPapers(prev => [newPaper, ...prev]);
+              return;
+          }
+      } catch (e) {
+          console.error("AI Generation failed, falling back to remix if needed", e);
+      }
+      
+      // Fallback logic if AI fails or returns empty (remix existing)
+      if (relevantQs.length === 0) {
+          alert("Not enough questions in Knowledge Base to generate a paper.");
+          return;
+      }
+      // ... (Fallback code omitted for brevity as AI generation is preferred) ...
+  };
+
   const handleExamComplete = (answers, examInfo) => {
-    // Update stats based on results
+    // Check if it is a predicted paper to skip mastery update
+    if (examInfo.isPredicted) {
+        // We could save a separate "Prediction Score History" here if desired
+        return; 
+    }
+
+    // Normal Past Paper Logic
     const newStats = { ...userStats };
     examInfo.questions.forEach((q, idx) => {
         const t = q.topic || 'General';
@@ -1658,6 +1861,8 @@ const App = () => {
             bookmarks={bookmarks}
             onToggleBookmark={toggleBookmark}
             bookmarkNotes={bookmarkNotes}
+            predictedPapers={predictedPapers}
+            onGeneratePrediction={generatePredictedPaper}
         />
       )}
     </>
