@@ -53,7 +53,8 @@ import {
   Lock,
   Unlock,
   User,
-  Sparkle
+  Sparkle,
+  Trash
 } from 'lucide-react';
 
 /**
@@ -582,6 +583,15 @@ const TeacherStudio = ({ customQuestions, setCustomQuestions, paperResources, se
   
   const untaggedCount = customQuestions.filter(q => !q.topic || q.topic === 'General' || q.topic === 'Uncategorized').length;
 
+  const handleHardReset = () => {
+        if (confirm("⚠️ WARNING: This will delete ALL local data (questions, stats, papers). The app will reset to its default state. Continue?")) {
+            const req = indexedDB.deleteDatabase(DB_NAME);
+            req.onsuccess = () => window.location.reload();
+            req.onerror = () => alert("Could not delete database.");
+            req.onblocked = () => alert("Operation blocked. Close other tabs.");
+        }
+  };
+
   const handleImgs = async (e) => {
     const files = Array.from(e.target.files);
     if(files.length){ 
@@ -794,7 +804,15 @@ const TeacherStudio = ({ customQuestions, setCustomQuestions, paperResources, se
     <div className="fixed inset-0 bg-slate-900/50 backdrop-blur-sm z-50 flex justify-center items-center p-4">
       <div className="bg-white rounded-3xl w-full max-w-5xl h-[95vh] flex flex-col shadow-2xl overflow-hidden">
         <div className="bg-slate-900 text-white p-4 flex justify-between items-center">
-          <h2 className="text-lg font-bold flex gap-2"><PenTool className="w-5 h-5"/> Teacher Studio</h2>
+            <div className="flex items-center gap-4">
+                <h2 className="text-lg font-bold flex gap-2"><PenTool className="w-5 h-5"/> Teacher Studio</h2>
+                <button 
+                    onClick={handleHardReset}
+                    className="bg-red-600 text-white text-xs px-3 py-1 rounded hover:bg-red-700 font-bold flex items-center gap-1"
+                >
+                    <Trash2 className="w-3 h-3" /> WIPE & RESET
+                </button>
+            </div>
           <button onClick={onClose}><X className="w-6 h-6 hover:text-red-400"/></button>
         </div>
         <div className="flex border-b">
@@ -1126,11 +1144,10 @@ const ExamMode = ({ examData, paperResources, onExit, onComplete, bookmarks, onT
   };
 
   // Logic to determine button state
-  // FIX: Allow proceed only if marksAwarded is defined (meaning user selected a score)
   const isAnswered = answers[idx] !== undefined;
   const isVerified = answers[idx]?.marksAwarded !== undefined && answers[idx]?.marksAwarded !== null;
   const canProceed = isAnswered && isVerified;
-  const maxMarks = q.marks || 1; // Default to 1 if undefined
+  const maxMarks = q.marks || 1; 
 
   return (
     <div className="min-h-screen bg-slate-50 flex flex-col font-sans">
